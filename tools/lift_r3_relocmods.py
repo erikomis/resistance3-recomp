@@ -152,6 +152,7 @@ def lift(m, dest, tk):
             "fnv": f"{r3_layout.fnv1a64(m.raw):016X}",
             "functions": len(report.get("functions", [])),
             "code_bytes": sum(b - a for a, b in bounds),
+            "gaps": [[a, n] for a, n in igjobs.uncovered(m.raw, 0, bounds, code_end, tk / "tools")],
             "unsupported": report.get("unsupported", {})}
 
 
@@ -283,7 +284,8 @@ def main():
         kept[m.ea] = e
         bad = sum(e["unsupported"].values())
         print(f"  {m.ea:08X} {m.kind:<4} 0x{len(m.raw):X} bytes, entry +0x{m.entry:X}, code to 0x{e['code_end']:X} "
-              f"({e['code_bytes']} bytes): {e['functions']} functions, {bad} unsupported -> image {e['image_id']}")
+              f"({e['code_bytes']} bytes): {e['functions']} functions, {bad} unsupported, "
+              f"{sum(n for _, n in e['gaps'])} bytes in {len(e['gaps'])} uncovered runs -> image {e['image_id']}")
     entries = [kept[ea] for ea in sorted(kept)]
     # Every folder with a spu_recomp.c is compiled: none may outlive its module.
     known = {e["dir"] for e in entries}

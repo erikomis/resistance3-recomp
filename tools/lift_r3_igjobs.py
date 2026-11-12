@@ -167,13 +167,19 @@ def discover(raw, base, entry, tk_tools):
     pointers the job computes (direct branches from the entry of the module
     at 0x00D7A480 reach 5 KB of its 64 KB of code), so three more sources
     seed it, each accepted only if everything it leads to decodes, without a
-    stop, to a branch:
+    stop (stopd, the game's assert, is fine), to a branch:
       - constants the code loads and branches to (the toolkit's collectors),
       - words outside the code that hold the address of a function start,
       - whatever follows a return, a jump or padding (the next function).
-    Last, descending, what follows undecodable words or a stop: the first
-    function behind a table. A table that decodes and runs into a function
-    already found is not code."""
+    The cases of a position-independent switch are followed through its
+    table: `ila $t, table` ... `bi $2`, the table right behind the bi, each
+    entry the distance from the table to a case (igBink's decoder loop at LS
+    0x5570 is one such case and ran in the interpreter without this).
+    Then, descending, what follows undecodable words or a stop: the first
+    function behind a table. A short table that decodes and runs into a
+    function already found is not code. Last, every 8-byte boundary still uncovered
+    between the first and the last instruction found: accepted if it decodes
+    to a branch, or runs for 16 instructions into code already found."""
     sys.path.insert(0, str(tk_tools))
     import find_spu_functions as fsf
     from spu_disasm import disassemble_spu
@@ -188,11 +194,12 @@ def discover(raw, base, entry, tk_tools):
 
     reached, starts, rejected = set(), set(), set()
 
-    def explore(seed):
+    def explore(seed, strict=True):
         """Instructions reachable from seed and not yet reached, the direct
         branch targets among them, and what was wrong with it, if anything:
         'bytes' (not instructions, a stop, or the end of the image) or
-        'falls' (runs into code already found without a branch)."""
+        'falls' (runs into code already found without a branch). Not strict:
+        the seed is known to be code, a stop is an assert and ends a path."""
         seen, found, work, wrong = set(), set(), [seed], set()
         while work:
             pc = work.pop()
@@ -203,8 +210,12 @@ def discover(raw, base, entry, tk_tools):
                         wrong.add("falls")
                     break
                 ins = by.get(pc)
-                if ins is None or ins.mnemonic in _UNDECODED or ins.mnemonic in ("stop", "stopd"):
-                    wrong.add("bytes")
+                # `stopd $0,$1,$1` is the game's assert and ends a path; a
+                # stop is what a table of small integers decodes to.
+                if ins is None or ins.mnemonic in _UNDECODED or (
+                        strict and ins.mnemonic == "stop"):
+                    if strict or first:
+                        wrong.add("bytes")
                     break
                 seen.add(pc)
                 first = False
@@ -213,22 +224,25 @@ def discover(raw, base, entry, tk_tools):
                         if lo <= t < hi and t % 4 == 0:
                             found.add(t)
                             work.append(t)
-                        else:
+                        elif strict:
                             wrong.add("bytes")
                 if ends(ins):
                     break
                 pc += 4
         return seen, found, wrong
 
-    def take(seed, may_fall=True, least=1):
+    def take(seed, may_fall=True, least=1, fall_least=0, strict=True):
         """Accept seed as a function start if what it leads to is code."""
-        if seed in starts or seed in rejected or not (lo <= seed < hi) or seed % 4:
+        if seed in starts or not (lo <= seed < hi) or seed % 4:
             return False
         if seed in reached:
             starts.add(seed)
             return True
-        seen, found, wrong = explore(seed)
-        if "bytes" in wrong or len(seen) < least or (not may_fall and "falls" in wrong):
+        if strict and seed in rejected:
+            return False
+        seen, found, wrong = explore(seed, strict)
+        if ("bytes" in wrong or len(seen) < least
+                or ("falls" in wrong and (not may_fall or len(seen) < fall_least))):
             rejected.add(seed)
             return False
         reached.update(seen)
@@ -274,7 +288,23 @@ def discover(raw, base, entry, tk_tools):
             t = struct.unpack_from(">I", raw, a - base)[0]
             if lo < t < hi and after(t, ("bi", "br", "bra", "nop", "lnop")):
                 grew |= take(t, least=2)
+        # The cases of a switch: `bi` with its table behind it, named by an ila.
+        tables = {t for i in insns if i.mnemonic == "ila" for t in _targets(i)}
+        for i in insns:
+            table = i.addr + 4
+            if i.mnemonic != "bi" or table not in tables or table in reached:
+                continue
+            cases = []
+            for a in range(table, hi - 3, 4):
+                t = (table + struct.unpack_from(">I", raw, a - base)[0]) & 0xFFFFFFFF
+                if a in reached or t % 4 or not (lo <= t < hi):
+                    break
+                cases.append(t)
+            if len(cases) >= 2:
+                for t in cases:
+                    grew |= take(t, strict=False)
         # The next function: what follows a return, a jump or padding in code.
+        # (Not padding anywhere: the compiler pads inside functions too.)
         for a in range(lo + 4, hi, 4):
             if a not in reached and a - 4 in reached and after(a, ("bi", "br", "bra", "nop", "lnop")):
                 grew |= take(a)
@@ -284,7 +314,13 @@ def discover(raw, base, entry, tk_tools):
         for a in range(hi - 4, lo, -4):
             if a not in reached and a - 4 not in reached and (
                     a - 4 < lo or after(a, ("stop", "stopd") + tuple(_UNDECODED))):
-                grew |= take(a, may_fall=False, least=4)
+                grew |= take(a, least=4, fall_least=16)
+        if grew:
+            continue
+        # What is left between the first and the last instruction found.
+        for a in range((min(reached) + 7) & ~7, max(reached), 8):
+            if a not in reached:
+                grew |= take(a, least=4, fall_least=16)
         if not grew:
             break
 
@@ -295,6 +331,31 @@ def discover(raw, base, entry, tk_tools):
             e += 4
         bounds.append((s, e))
     return bounds, max(reached) + 4
+
+
+def uncovered(raw, base, bounds, code_end, tk_tools):
+    """[(address, bytes)] of what discover left out between the first function
+    and the end of the code that still reads as code: runs of four or more
+    words that decode and are not a stop or padding. Tables of small
+    integers and floats read as code too, so this over-reports."""
+    sys.path.insert(0, str(tk_tools))
+    from spu_disasm import disassemble_spu
+    covered = set()
+    for a, b in bounds:
+        covered.update(range(a, b, 4))
+    first = min(a for a, _ in bounds)
+    out, run = [], 0
+    for ins in disassemble_spu(raw[first - base:code_end - base], base_addr=first):
+        if (ins.addr in covered or ins.mnemonic in _UNDECODED or ins.mnemonic in _PADDING
+                or ins.mnemonic in ("stop", "stopd")):
+            if run >= 4:
+                out.append((ins.addr - 4 * run, 4 * run))
+            run = 0
+        else:
+            run += 1
+    if run >= 4:
+        out.append((code_end - 4 * run, 4 * run))
+    return out
 
 
 def lift(m, raw, dest, tk):
@@ -329,6 +390,7 @@ def lift(m, raw, dest, tk):
             "fnv": f"{r3_layout.fnv1a64(raw):016X}",
             "functions": len(report.get("functions", [])),
             "code_bytes": sum(b - a for a, b in bounds),
+            "gaps": [[a, n] for a, n in uncovered(raw, m.base, bounds, code_end, tk / "tools")],
             "unsupported": report.get("unsupported", {})}
 
 
@@ -469,7 +531,8 @@ def main():
         bad = sum(e["unsupported"].values())
         print(f"  {m.ea:08X} {m.name or '-':<14} LS 0x{m.base:X}..0x{m.base + m.size:X} entry 0x{m.entry:X} "
               f"code to 0x{e['code_end']:X} ({e['code_bytes']} bytes): {e['functions']} functions, "
-              f"{bad} unsupported -> image {e['image_id']}")
+              f"{bad} unsupported, {sum(n for _, n in e['gaps'])} bytes in {len(e['gaps'])} "
+              f"uncovered runs -> image {e['image_id']}")
     # A partial run (--only) replaces the whole registration: stale folders of
     # other modules stay on disk but are neither registered nor compiled.
     r3_layout.write_if_changed(manifest_path, json.dumps(

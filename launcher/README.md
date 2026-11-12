@@ -314,6 +314,76 @@ with library art drawn at that moment from the player's own `ICON0.PNG` and
 `PIC1.PNG`; the entry runs `--play --exit-with-game`, so Steam sees the game
 exactly as long as it runs. **Remove from Steam** takes it out again.
 
+## RecompLauncher
+
+[RecompLauncher](https://github.com/elripalda/RecompLauncher) (a third-party
+launcher, GPL-3) installs recomps from their GitHub release zips. The
+profile it reads is `recomplauncher.json` at the repository's top, shipped at
+the top of the zip next to the .app:
+
+- **The copy** (`game`): the player's own US disc BCUS98176, as a decrypted
+  `.iso` or a folder with `PS3_GAME/` and `PS3_DISC.SFB` (checked by
+  `PS3_DISC.SFB` and the serial).
+- **Setup** (`prepare`): `Resistance 3 Launcher.app/Contents/MacOS/resistance3-launcher
+  --prepare --game <copy>`, with a 2-hour limit. It runs without a window
+  and does what Home > Install the game does: the copy checked (read only:
+  the `.iso`'s ISO 9660 `PS3_DISC.SFB`, a folder's `PARAM.SFO` and
+  `PS3_DISC.SFB`) and remembered as the disc (an image attached as Game >
+  Disc does), the Command Line Tools, `git pull --ff-only` in the install's
+  own checkout (`<data>/src`, when it is clean; a checkout of your own is
+  left alone), then the same install job (`install_job`, `spawn_install`:
+  the clone, `tools/install.sh`, `<data>/install.log`). It prints
+  `progress <0..1> <text>` lines (the window's steps and weights from
+  `src/progress.ts`, never going back, with time moving a long step along)
+  and the scripts' output as plain lines, and exits 0 only when the game's
+  build is there. One at a time (`<data>/prepare.lock`). Running it again
+  brings an install up to date and continues one that stopped.
+- **Play** (`start`): `--play --game <copy>`. With `RECOMPLAUNCHER=1` (set
+  by RecompLauncher) the window never opens: the copy is remembered, the
+  window's Play runs (settings, save backup, `last.log`), and the
+  launcher's process becomes the game's window host (`exec`; `caffeinate`
+  waits on it beside), so RecompLauncher sees the game's own exit code and
+  its Stop reaches the game. Without that variable `--play` opens the
+  window and plays once it is up, as before; `--game` there is remembered
+  first (a bad one is reported and the game is not started).
+- **Settings** (`config`, `settings`): window mode and size, V-Sync,
+  resolution, upscaling, anti-aliasing, texture filtering, sharpening,
+  volume, Show FPS and Keep awake, written into `launcher.json` (the same
+  keys and values as the window; a test checks every one reads back).
+- **Saves and logs**: `<data>/dev_hdd0/home/00000001/savedata` and
+  `input.toml`; the logs folder is `<data>` itself, where `last.log` and
+  `install.log` are.
+
+Exit codes of `--prepare` and of `--play` under RecompLauncher (`prepare.rs`,
+`Exit`; the profile's `exit_codes` say them to the player, word for word,
+which a test checks):
+
+| Code | Meaning |
+|---|---|
+| 0 | prepare: the game is built; play: a normal quit (`"ok"`) |
+| 40 | no copy given, not found, not BCUS98176, or the image would not mount |
+| 41 | the player has to do something first: the Command Line Tools (their installer is opened), RPCS3 when the decrypt step needs it, not a Mac |
+| 42 | the sources or a download the install makes failed (the connection) |
+| 43 | the install or the build failed (`install.log`) |
+| 44 | another prepare, an install in the same checkout, or this game's build is running (a process whose command line has `build/BCUS98176/ResistanceRecomp`; the other Resistance ports' builds have the same name under their own title IDs) |
+| 45 | play: the game is not built yet |
+| 46 | the launcher failed on its own (its settings, starting a program) |
+
+Trying it without touching your own install: `HOME=<scratch folder>` moves
+`<data>` (and the folders the port is looked for in) there. A copy that is
+refused, `--prepare` with no `--game`, or a lock held on
+`<scratch>/Library/Application Support/resistance-recomp-3/prepare.lock`
+exits before anything is built.
+
+**The zip**: `scripts/package-recomplauncher.sh [--app <.app>] [--out
+<folder>]` builds the release .app (or takes one), checks its program is
+where the profile says, that it is arm64 and that `scripts/check_bundle.py`
+passes, and writes `resistance3-recomp-<version>-macos-arm64.zip` (the .app
+and `recomplauncher.json` at the top) into `launcher/release/`. It uploads
+nothing. Publishing a GitHub release with that zip attached, and getting
+the game listed on recomplauncher.com (its Submit a Game form), are separate
+manual steps; the README's badge links to recomplauncher.com until then.
+
 ## Development
 
 Needs Node 20+, Rust (stable) and the Xcode Command Line Tools.

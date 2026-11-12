@@ -106,6 +106,10 @@ sendo trabalhado.
 - [ ] Publicar o repositório (`erikomis/resistance3-recomp`, o nome que o
   updater do launcher e o clone das fontes já usam) e a primeira release do
   launcher.
+- [ ] RecompLauncher: o perfil (`recomplauncher.json`), o `--prepare` sem
+  janela do launcher e o `scripts/package-recomplauncher.sh` já estão aqui;
+  falta uma release com esse zip, um prepare completo num Mac limpo e a
+  listagem no recomplauncher.com (README do launcher, "RecompLauncher").
 
 ## Depois
 

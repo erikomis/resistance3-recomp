@@ -249,6 +249,25 @@ if(PORT_ENABLE_SPU AND R3_RELOCMODS AND EXISTS "${SPU_DIR}/relocmods/relocmods_r
     list(APPEND SPU_SOURCES ${R3_RELOCMODS} "${SPU_DIR}/relocmods/relocmods_register.c")
 endif()
 
+# Insomniac's ig job modules (raw SPU code igPm's job loop copies to LS 0x100:
+# igBink and 28 more). tools/lift_r3_igjobs.py lifts them into spu/igjobs/ and
+# lists the sources it registered in igjobs_sources.cmake; PS3_IGJOBS=0 leaves
+# them to the interpreter.
+if(PORT_ENABLE_SPU AND EXISTS "${SPU_DIR}/igjobs/igjobs_sources.cmake")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(tool "${R3_TOOLS_DIR}/lift_r3_igjobs.py")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${tool}" "${R3_EBOOT}" "${SPU_DIR}/igjobs/igjobs_sources.cmake")
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${tool}" --check --eboot "${R3_EBOOT}"
+        RESULT_VARIABLE rc OUTPUT_VARIABLE msg ERROR_VARIABLE err)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "igjobs: ${err}")
+    endif()
+    message(STATUS "${msg}")
+    include("${SPU_DIR}/igjobs/igjobs_sources.cmake")
+    list(APPEND SPU_SOURCES ${R3_IGJOB_SOURCES})
+endif()
+
 add_executable(${PROJECT_NAME}
     main.cpp
     stubs.cpp

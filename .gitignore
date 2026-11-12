@@ -59,6 +59,7 @@ port/spu/*/functions.json
 port/spu/*/lift.json
 port/spu/jobmods/
 port/spu/relocmods/
+port/spu/igjobs/
 port/spu/images/
 port/spu/raw_dump/
 port/spu/captured/

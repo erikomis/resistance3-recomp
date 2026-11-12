@@ -124,7 +124,9 @@ for s in $steps; do
         for t in "$here"/prepare_r3_*.py(N); do
             echo "  ${t:t}"
             PS3RECOMP_DIR=$TK "$PY" "$t" --eboot "$E"
-        done ;;
+        done
+        echo "  lift_r3_igjobs.py (igPm's job modules)"
+        PS3RECOMP_DIR=$TK "$PY" "$here/lift_r3_igjobs.py" --eboot "$E" ;;
     build)
         say "build"
         bp=${HOMEBREW_PREFIX:-$(brew --prefix 2>/dev/null)}

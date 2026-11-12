@@ -20255,10 +20255,34 @@ index 131cc0d..45b0eb7 100644
      if (!(control1 & 0xFFFFu)) control1 = 0xAAE4u;   /* unset -> identity */
  
 diff --git a/libs/video/rsx_vertex_compact.c b/libs/video/rsx_vertex_compact.c
-index 7fa5f31..e95dd54 100644
+index 7fa5f31..92e82d9 100644
 --- a/libs/video/rsx_vertex_compact.c
 +++ b/libs/video/rsx_vertex_compact.c
-@@ -177,13 +177,21 @@ void rsx_vertex_fetch_plan_set_inline(
+@@ -127,8 +127,21 @@ void rsx_vertex_fetch_plan_init(
+         rsx_dsp_get_vertex_attr(rsx, attr, &fetch->desc);
+         fetch->elem_size =
+             rsx_vertex_attrib_size(fetch->desc.type, fetch->desc.size);
+-        fetch->stride =
+-            fetch->desc.stride ? fetch->desc.stride : fetch->elem_size;
++        /* RSX stride 0: the address does not advance, every vertex reads the
++         * same element (RPCS3's single_vertex), not OpenGL's "tightly packed".
++         * Resistance 3's ribbons and billboards keep one record per draw at
++         * stride 0; fetched as a packed array, each vertex read the next
++         * strands' records and the triangles reached into the sky.
++         * PS3RECOMP_ENG_STRIDE0=packed restores the old reading. */
++        {
++            static int s_packed = -1;
++            if (s_packed < 0) {
++                const char* e = getenv("PS3RECOMP_ENG_STRIDE0");
++                s_packed = e && strcmp(e, "packed") == 0;
++            }
++            fetch->stride = fetch->desc.stride ? fetch->desc.stride
++                          : s_packed ? fetch->elem_size : 0u;
++        }
+         rsx_dsp_vertex_default(rsx, attr, fetch->default_value);
+         if (attr == 3 &&
+             fetch->default_value[0] == 0.0f &&
+@@ -177,13 +190,21 @@ void rsx_vertex_fetch_plan_set_inline(
  
  void rsx_vertex_fetch_plan_prepare(
      rsx_vertex_fetch_plan* plan, const rsx_vertex_ref* refs, u32 count)
@@ -20283,7 +20307,7 @@ index 7fa5f31..e95dd54 100644
      int plain_known = 0;
      u32 plain_first = UINT_MAX, plain_last = 0;
      for (u32 slot = 0; slot < plan->layout.count; slot++) {
-@@ -224,11 +232,18 @@ void rsx_vertex_fetch_plan_prepare(
+@@ -224,11 +245,18 @@ void rsx_vertex_fetch_plan_prepare(
          if (fetch->desc.frequency <= 1) {
              if (!plain_known) {
                  plain_known = 1;
@@ -20307,7 +20331,7 @@ index 7fa5f31..e95dd54 100644
                  }
              }
              first = plain_first;
-@@ -242,8 +257,8 @@ void rsx_vertex_fetch_plan_prepare(
+@@ -242,8 +270,8 @@ void rsx_vertex_fetch_plan_prepare(
              if (element > last) last = element;
          }
  
@@ -20318,7 +20342,7 @@ index 7fa5f31..e95dd54 100644
          const u64 start = prefix + (u64)first * fetch->stride;
          const u64 end =
              prefix + (u64)last * fetch->stride + fetch->elem_size;
-@@ -262,50 +277,152 @@ void rsx_vertex_fetch_plan_prepare(
+@@ -262,50 +290,152 @@ void rsx_vertex_fetch_plan_prepare(
      }
  }
  
@@ -20502,7 +20526,7 @@ index 7fa5f31..e95dd54 100644
      }
      return 1;
  }
-@@ -320,6 +437,42 @@ static u64 rsx_vertex_remap_hash(u64 value)
+@@ -320,6 +450,42 @@ static u64 rsx_vertex_remap_hash(u64 value)
      return value;
  }
  

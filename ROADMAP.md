@@ -27,6 +27,14 @@ worked on.
   loops are rebuilt into a line list bounded by the restart cuts
   (`PS3RECOMP_ENG_LINE_REBUILD`, on): the power lines, indexed line strips,
   used to join each wire to the next across the sky.
+- Green and dark translucent wedges reaching into the sky (ribbons and
+  billboards near effects and the Stalker): RSX vertex arrays with stride 0
+  were fetched as tightly packed arrays (OpenGL's meaning). On the RSX stride
+  0 repeats one element for every vertex; R3 keeps one record per draw that
+  way, so each vertex read the next strands' records
+  (`PS3RECOMP_ENG_STRIDE0=packed` restores the old reading). The render-target
+  table has 512 slots by default (`PS3RECOMP_ENG_SURFACE_SLOTS`; 128 evicted
+  thousands of targets a session).
 - Fixed collision: CollBroad leaves its candidate list in its own local
   store and CollNarrow GETs it through the SPU thread LS window
   (EA 0xF0000000 + n*0x100000, here 0xF0007410). The MFC read that EA as

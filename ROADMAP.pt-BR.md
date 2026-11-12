@@ -29,6 +29,14 @@ sendo trabalhado.
   strips e line loops são reconstruídos numa lista de linhas que respeita os
   cortes de restart (`PS3RECOMP_ENG_LINE_REBUILD`, ligado): os fios de luz,
   line strips indexados, ligavam cada fio ao próximo atravessando o céu.
+- Cunhas translúcidas verdes e escuras indo até o céu (fitas e billboards
+  perto de efeitos e do Stalker): arrays de vértices do RSX com stride 0 eram
+  lidos como arrays compactados (o sentido do OpenGL). No RSX, stride 0
+  repete um elemento para todos os vértices; o R3 guarda um registro por draw
+  assim, e cada vértice lia os registros das fitas seguintes
+  (`PS3RECOMP_ENG_STRIDE0=packed` volta à leitura antiga). A tabela de render
+  targets tem 512 vagas por padrão (`PS3RECOMP_ENG_SURFACE_SLOTS`; com 128 eram
+  milhares de alvos expulsos por sessão).
 - Colisão corrigida: o CollBroad deixa a lista de candidatos no próprio local
   store e o CollNarrow a lê por DMA pela janela de LS das threads SPU
   (EA 0xF0000000 + n*0x100000, aqui 0xF0007410). O MFC lia esse endereço como

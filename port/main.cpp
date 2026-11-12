@@ -707,6 +707,16 @@ int main(int argc, char** argv)
         else if (strcmp(b, "off") == 0 || strcmp(b, "0") == 0) unsetenv("SPU_CH_BLOCK");
 #endif
     }
+    /* No PlayStation Eye: the toolkit's virtual EyeToy is reported attached
+     * by default, and after the loading movie Resistance 3 opened "PlayStation
+     * Eye is not correctly connected." and waited on it (it polls
+     * cellCameraGetBufferInfoEx, which the toolkit lacks). PS3_CAMERA=1 puts
+     * the virtual camera back. */
+#ifdef _WIN32
+    if (!getenv("PS3_CAMERA")) _putenv_s("PS3_CAMERA", "0");
+#else
+    setenv("PS3_CAMERA", "0", 0);
+#endif
     /* Real sys_lwcond notifications instead of the 1 ms sleep-and-retry
      * fallback. Resistance 2's job/loader worker pools (func_00B11A80 x14,
      * func_007D9EB8 x8) hand work over through lwconds; at ~1.2 ms per

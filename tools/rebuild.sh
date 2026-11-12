@@ -126,7 +126,9 @@ for s in $steps; do
             PS3RECOMP_DIR=$TK "$PY" "$t" --eboot "$E"
         done
         echo "  lift_r3_igjobs.py (igPm's job modules)"
-        PS3RECOMP_DIR=$TK "$PY" "$here/lift_r3_igjobs.py" --eboot "$E" ;;
+        PS3RECOMP_DIR=$TK "$PY" "$here/lift_r3_igjobs.py" --eboot "$E"
+        echo "  lift_r3_relocmods.py (position-independent sub-modules)"
+        PS3RECOMP_DIR=$TK "$PY" "$here/lift_r3_relocmods.py" --eboot "$E" ;;
     build)
         say "build"
         bp=${HOMEBREW_PREFIX:-$(brew --prefix 2>/dev/null)}

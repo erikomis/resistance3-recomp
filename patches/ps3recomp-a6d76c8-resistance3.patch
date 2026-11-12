@@ -3589,6 +3589,43 @@ index 4d916ac..4ef0ff8 100644
      /* Find longest matching prefix */
      int best = -1;
      size_t best_len = 0;
+diff --git a/libs/hardware/cellCamera.c b/libs/hardware/cellCamera.c
+index ac85195..02513c3 100644
+--- a/libs/hardware/cellCamera.c
++++ b/libs/hardware/cellCamera.c
+@@ -100,6 +100,32 @@ s32 cellCameraOpenEx(s32 devNum, void* info)
+     return CELL_OK;
+ }
+ 
++/* cellCameraGetBufferInfoEx: the buffer description OpenEx returned, for an
++ * open camera. Resistance 3's "MoveKitUpdateThread" polls it whatever the
++ * camera state; unimplemented, the generic stub answered CELL_OK and left the
++ * caller's struct as it was, and the game then reported "PlayStation Eye is
++ * not correctly connected." and waited on that dialog. Same order of checks
++ * as RPCS3: not initialised, no device, not open. */
++s32 cellCameraGetBufferInfoEx(s32 devNum, void* info)
++{
++    (void)devNum;
++    u32 ea = (u32)(uintptr_t)info;
++    if (!s_initialized) return (s32)CELL_CAMERA_ERROR_NOT_INITIALIZED;
++    if (!ea) return (s32)CELL_CAMERA_ERROR_INVALID_ARGUMENT;
++    if (!cam_present()) return (s32)CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
++    if (!s_open) return (s32)CELL_CAMERA_ERROR_NOT_OPEN;
++    vm_write32(ea + 12, CAM_BUFFER_GUEST_EA);
++    vm_write32(ea + 16, CAM_W * CAM_H);
++    vm_write32(ea + 20, CAM_W);
++    vm_write32(ea + 24, CAM_H);
++    vm_write32(ea + 28, 0);
++    vm_write32(ea + 32, 0x00EE7031u);
++    vm_write32(ea + 44, 0);
++    vm_write32(ea + 48, CAM_BUFFER_GUEST_EA);
++    vm_write32(ea + 52, CAM_BUFFER_GUEST_EA);
++    return CELL_OK;
++}
++
+ s32 cellCameraOpen(s32 devNum, CellCameraInfo* info)
+ {
+     /* Same library-fills-buffer contract; the Ex tail fields land in memory
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
 index 7fa8cab..e046469 100644
 --- a/libs/input/cellPad.c

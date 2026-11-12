@@ -57,6 +57,22 @@ sendo trabalhado.
   no instante em que `put` se move (`GCM_PUT_WATCH`, uma thread vigia),
   gravações fora da memória do RSX são recusadas
   (`PS3RECOMP_ENG_STORE_BOUNDS`) e um alarme registra "FIFO desync suspect".
+- Portados dos PRs abertos do ps3recomp upstream (filtrados pela tabela de
+  importações do R3): filas de eventos publicadas sob o lock (#759), slot HLE
+  em uso que ficava sujo (#776), pontos de retorno do drain SPU limpos no
+  reinício (#761), um contexto de reserva por thread (#758: o registro
+  enchia depois de ~127 threads), detach POSIX de thread terminada (#717),
+  sem espera de 3 s ao abrir diretórios (#768), cellFsWrite curto devolve EIO
+  (#705), 40 GiB livres como no RPCS3 (#692), shufb NEON de 7 operações
+  (#716), contagem de reservas opcional (#731,
+  `PS3RECOMP_SPU_LIVE_HOLDERS`); RSX: programas de vértice leem os bits de
+  desvio em tempo de execução em vez de um pipeline por valor (#757), escala
+  dos timestamps de report (#753, `PS3RECOMP_GCM_REPORT_BUSY_SCALE`, padrão
+  inalterado), 16384 registros Metal por quadro (#719; o R3 enchia 8192 mais
+  de 64 vezes por sessão), memo de decodificação de textura por unidade
+  (#762), apresentação única opcional (#721), arredondamento no unmap (#704),
+  TXD (#701). O #675 (JUMP no formato novo) foi testado e revertido: quebrava
+  a leitura da FIFO do R3 (trava depois de um desalinhamento).
 - Manchas pretas no chão de Haven: os decalques se iluminam a partir de
   render targets de 16x16; com a tabela cheia eles eram descartados sem o
   conteúdo e o decalque multiplicava por zero. Alvos pequenos agora são

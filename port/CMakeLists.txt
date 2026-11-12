@@ -81,6 +81,9 @@ message(STATUS "Lifted sources:  ${RECOMP_SOURCE_COUNT} file(s)")
 # different reason. add_subdirectory hands all of that over with the target.
 add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp_sdk"
                  EXCLUDE_FROM_ALL)
+# The Metal engine's record stream: Resistance 3 filled the default 8192
+# records 64+ times a run, each a synchronous mid-frame submit.
+target_compile_definitions(ps3recomp_runtime PRIVATE ENG_MAX_RECORDS=16384)
 
 # ---------------------------------------------------------------------------
 # The HLE NID table

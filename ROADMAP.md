@@ -56,6 +56,20 @@ worked on.
   moment `put` moves (`GCM_PUT_WATCH`), so a reclaimed link is still
   followed; a store outside RSX memory is refused
   (`PS3RECOMP_ENG_STORE_BOUNDS`) and a tripwire logs "FIFO desync suspect".
+- Ported from upstream ps3recomp's open PRs (triaged against R3's import
+  table): event queues published under their lock (#759), stale HLE
+  in-flight slot (#776), SPU drain return points cleared on restart (#761),
+  one reservation context per thread (#758: the registry filled after ~127
+  thread starts), POSIX detach of a finished thread (#717), no 3 s retry on
+  directory opens (#768), short cellFsWrite reports EIO (#705), 40 GiB free
+  space as RPCS3 reports (#692), a 7-op NEON shufb (#716), opt-in live
+  reservation holder counts (#731, `PS3RECOMP_SPU_LIVE_HOLDERS`); RSX: vertex
+  programs read branch bits at run time instead of one pipeline per value
+  (#757), report-stamp scale (#753, `PS3RECOMP_GCM_REPORT_BUSY_SCALE`,
+  default unchanged), 16384 Metal records a frame (#719; R3 filled 8192
+  64+ times a run), per-unit texture decode memo (#762), opt-in single
+  present (#721), unmap rounding (#704), TXD (#701). #675 (new-style JUMP)
+  was tried and reverted: it broke R3's FIFO walk (a hang after a desync).
 - Black patches on the ground in Haven: decals light themselves from 16x16
   render targets; when the target table filled, those were evicted without
   their content and the decals multiplied by zero. Small targets are now

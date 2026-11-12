@@ -64,9 +64,9 @@ worked on.
 
 ## Next
 
-- [ ] The loading movie: the Bink jobs igPm runs on queues 3 and 4 (loaded
-  over the policy module, so interpreted) never complete, and the main
-  thread waits on them in `SpuJob::SyncJob`.
+- [x] The loading movie (igBink jobs, lifted with `tools/lift_r3_igjobs.py`),
+  the first autosave, the lobby (front end) and, pressing X through it, the
+  first level (`haven_town_ridge`) at 30 fps.
 - [ ] Relocatable SPU modules: 18 DEADDEAD blobs as in Resistance 2, plus
   ila-headed modules in a newer format (tables `igNav` and others).
 - [ ] First boot: logos, the auto-save notice, input (Resistance 2 needed a

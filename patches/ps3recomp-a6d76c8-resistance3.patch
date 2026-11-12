@@ -3626,6 +3626,66 @@ index ac85195..02513c3 100644
  s32 cellCameraOpen(s32 devNum, CellCameraInfo* info)
  {
      /* Same library-fills-buffer contract; the Ex tail fields land in memory
+diff --git a/libs/hardware/cellGem.c b/libs/hardware/cellGem.c
+index 001fd5a..0fc331f 100644
+--- a/libs/hardware/cellGem.c
++++ b/libs/hardware/cellGem.c
+@@ -55,7 +55,9 @@ s32 cellGemGetState(u32 gemNum, u32 flag, u64 timestamp, CellGemState* state)
+     (void)gemNum; (void)flag; (void)timestamp;
+     if (!s_initialized) return (s32)CELL_GEM_ERROR_NOT_INITIALIZED;
+     if (!state) return (s32)CELL_GEM_ERROR_INVALID_ARGUMENT;
+-    return (s32)CELL_GEM_ERROR_NOT_CONNECTED;
++    /* No Move on any port: a cleared state and the NOT_CONNECTED status. */
++    for (u32 o = 0; o < 192; o += 4) vm_write32((u32)(uintptr_t)state + o, 0);
++    return CELL_GEM_NOT_CONNECTED;
+ }
+ 
+ s32 cellGemIsTrackableHue(u32 hue)
+diff --git a/libs/hardware/cellGem.h b/libs/hardware/cellGem.h
+index 76c5505..6cdac92 100644
+--- a/libs/hardware/cellGem.h
++++ b/libs/hardware/cellGem.h
+@@ -15,13 +15,34 @@
+ extern "C" {
+ #endif
+ 
+-/* Error codes */
+-#define CELL_GEM_ERROR_NOT_INITIALIZED     0x80121801
++/* Error codes, as the SDK numbers them (and RPCS3): 0x80121801 is
++ * RESOURCE_ALLOCATION_FAILED, not "not initialised" -- Resistance 3 compares
++ * cellGemUpdateStart's result with 0x80121803 for that. The old table was
++ * shifted by one and also had "not connected" / "not calibrated" / "no video"
++ * as errors, which they are not (statuses below). */
++#define CELL_GEM_ERROR_RESOURCE_ALLOCATION_FAILED 0x80121801
+ #define CELL_GEM_ERROR_ALREADY_INITIALIZED 0x80121802
+-#define CELL_GEM_ERROR_INVALID_ARGUMENT    0x80121803
+-#define CELL_GEM_ERROR_NOT_CONNECTED       0x80121804
+-#define CELL_GEM_ERROR_NOT_CALIBRATED      0x80121805
+-#define CELL_GEM_ERROR_NO_VIDEO            0x80121806
++#define CELL_GEM_ERROR_UNINITIALIZED       0x80121803
++#define CELL_GEM_ERROR_INVALID_PARAMETER   0x80121804
++#define CELL_GEM_ERROR_INVALID_ALIGNMENT   0x80121805
++#define CELL_GEM_ERROR_UPDATE_NOT_FINISHED 0x80121806
++#define CELL_GEM_ERROR_UPDATE_NOT_STARTED  0x80121807
++#define CELL_GEM_ERROR_NOT_A_HUE           0x8012180B
++/* The names this file's callers use. */
++#define CELL_GEM_ERROR_NOT_INITIALIZED     CELL_GEM_ERROR_UNINITIALIZED
++#define CELL_GEM_ERROR_INVALID_ARGUMENT    CELL_GEM_ERROR_INVALID_PARAMETER
++
++/* Status values returned (not errors) by cellGemGetState, cellGemGetHue,
++ * cellGemCalibrate and friends. Resistance 3 treats a cellGemGetState
++ * result of 1 as "no Move on this port" and anything else as a Move in use;
++ * with the old pseudo-error it asked for the PlayStation Eye. */
++#define CELL_GEM_NOT_CONNECTED             1
++#define CELL_GEM_SPHERE_NOT_CALIBRATED     2
++#define CELL_GEM_NO_VIDEO                  6
++#define CELL_GEM_NOT_CALIBRATED            8
++#define CELL_GEM_ERROR_NOT_CONNECTED       CELL_GEM_NOT_CONNECTED
++#define CELL_GEM_ERROR_NOT_CALIBRATED      CELL_GEM_NOT_CALIBRATED
++#define CELL_GEM_ERROR_NO_VIDEO            CELL_GEM_NO_VIDEO
+ 
+ /* Constants */
+ #define CELL_GEM_MAX_NUM   4
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
 index 7fa8cab..e046469 100644
 --- a/libs/input/cellPad.c
@@ -32678,10 +32738,38 @@ index bfe849d..08b20e4 100644
  #ifdef _WIN32
      CRITICAL_SECTION cs;
 diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
-index c64b0b8..7de33a5 100644
+index c64b0b8..96fd87c 100644
 --- a/runtime/syscalls/sys_ppu_thread.c
 +++ b/runtime/syscalls/sys_ppu_thread.c
-@@ -1124,10 +1124,17 @@ int64_t sys_ppu_thread_get_priority(ppu_context* ctx)
+@@ -79,12 +79,24 @@ static void table_unlock(void)
+ #endif
+ }
+ 
+-/* Find a free slot. Returns index or -1. Must be called under lock. */
++/* Find a free slot. Returns index or -1. Must be called under lock.
++ *
++ * Round-robin from the slot after the last one handed out, so a thread id
++ * (slot + 1) is not given to a new thread the moment its owner exits. Titles
++ * poll a worker's id until it stops existing: Resistance 3's save manager
++ * calls sys_ppu_thread_get_priority on its "Auto Save Thread" until ESRCH,
++ * and when the first free slot was reused 0.2 s later by a long-lived
++ * "Party invite thread" the save never ended and the front end waited on it
++ * forever. LV2 does not recycle ids like that. */
++static int s_next_free_slot = 1;
+ static int find_free_slot(void)
+ {
+-    for (int i = 0; i < PPU_THREAD_MAX; i++) {
+-        if (g_ppu_threads[i].state == PPU_THREAD_STATE_FREE)
++    for (int k = 0; k < PPU_THREAD_MAX; k++) {
++        int i = (s_next_free_slot + k) % PPU_THREAD_MAX;
++        if (g_ppu_threads[i].state == PPU_THREAD_STATE_FREE) {
++            s_next_free_slot = (i + 1) % PPU_THREAD_MAX;
+             return i;
++        }
+     }
+     return -1;
+ }
+@@ -1124,10 +1136,17 @@ int64_t sys_ppu_thread_get_priority(ppu_context* ctx)
  
      table_lock();
      ppu_thread_info* t = find_thread(tid);
@@ -32702,7 +32790,7 @@ index c64b0b8..7de33a5 100644
           * "Error initializing PSSG"). Report a sane default priority + success. */
          table_unlock();
          if (prio_addr != 0) {
-@@ -1250,6 +1257,17 @@ int64_t sys_ppu_thread_get_join_state(ppu_context* ctx)
+@@ -1250,6 +1269,17 @@ int64_t sys_ppu_thread_get_join_state(ppu_context* ctx)
   * r3 = pointer to receive stack info struct
   *   struct { u32 addr; u32 size; }
   * -----------------------------------------------------------------------*/
@@ -32720,7 +32808,7 @@ index c64b0b8..7de33a5 100644
  int64_t sys_ppu_thread_get_stack_information(ppu_context* ctx)
  {
      uint32_t out_addr = LV2_ARG_PTR(ctx, 0);
-@@ -1264,8 +1282,8 @@ int64_t sys_ppu_thread_get_stack_information(ppu_context* ctx)
+@@ -1264,8 +1294,8 @@ int64_t sys_ppu_thread_get_stack_information(ppu_context* ctx)
              uint32_t* out = (uint32_t*)vm_to_host(out_addr);
  #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ || defined(_WIN32)
              /* byteswap both fields */
@@ -32731,7 +32819,7 @@ index c64b0b8..7de33a5 100644
              sa = ((sa >> 24) & 0xFF) | ((sa >> 8) & 0xFF00) |
                   ((sa <<  8) & 0xFF0000) | ((sa << 24) & 0xFF000000u);
              ss = ((ss >> 24) & 0xFF) | ((ss >> 8) & 0xFF00) |
-@@ -1273,18 +1291,30 @@ int64_t sys_ppu_thread_get_stack_information(ppu_context* ctx)
+@@ -1273,18 +1303,30 @@ int64_t sys_ppu_thread_get_stack_information(ppu_context* ctx)
              out[0] = sa;
              out[1] = ss;
  #else
@@ -32766,7 +32854,7 @@ index c64b0b8..7de33a5 100644
          sa = ((sa >> 24) & 0xFF) | ((sa >> 8) & 0xFF00) |
               ((sa <<  8) & 0xFF0000) | ((sa << 24) & 0xFF000000u);
          ss = ((ss >> 24) & 0xFF) | ((ss >> 8) & 0xFF00) |
-@@ -1292,8 +1322,8 @@ int64_t sys_ppu_thread_get_stack_information(ppu_context* ctx)
+@@ -1292,8 +1334,8 @@ int64_t sys_ppu_thread_get_stack_information(ppu_context* ctx)
          out[0] = sa;
          out[1] = ss;
  #else

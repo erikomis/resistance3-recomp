@@ -70,9 +70,9 @@ sendo trabalhado.
 
 ## Próximos
 
-- [ ] O vídeo de carregamento: os jobs do Bink que o igPm roda nas filas 3 e 4
-  (carregados por cima do policy module, então interpretados) nunca
-  terminam, e a thread principal espera por eles no `SpuJob::SyncJob`.
+- [x] O vídeo de carregamento (jobs do igBink, traduzidos com
+  `tools/lift_r3_igjobs.py`), o primeiro autosave, o lobby (menu) e,
+  apertando X por ele, a primeira fase (`haven_town_ridge`) a 30 fps.
 - [ ] Os módulos SPU relocáveis: 18 blobs DEADDEAD como no Resistance 2, e
   módulos com cabeçalho ila num formato mais novo (tabelas `igNav` e outras).
 - [ ] Primeiro boot: logos, o aviso de auto-save, input (o Resistance 2

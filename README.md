@@ -151,6 +151,7 @@ Saves, the HDD folders and the log (`last.log`) live in
 | `PS3_VFS_ROOT` | the folder holding `PS3_GAME/` |
 | `RES_EBOOT_BIN` | the `EBOOT.BIN` the decrypt step reads |
 | `RES_DATA` | saves, HDD folders and the log |
+| `RES_DEBUG=1` | bring-up diagnostics (interpreted SPU code, SPURS policy modules, hot firmware calls, where SPU code is loaded from) and, on exit, `logs/summary-<time>.txt` with the lines that matter |
 | `RES_UNLOCK_FPS=1` | "Unlock FPS"; the frame rate follows the vblank rate (`PS3_VBLANK_HZ`, default 62.5; patch.yml advises against more than 60–75) |
 | `RES_FOV=<f>` | "Extended FOV" (RPCS3's value is 0.7) |
 | `RES_HTTP_POLL_COMPAT=0` | `cellHttpClientPollConnections` back to the toolkit default (carried from Resistance 2, where the default made the HTTP thread spin) |

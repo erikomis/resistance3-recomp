@@ -59,6 +59,17 @@ echo "Log: $LOG"
 #                       stalling for 30-500 ms
 #   PS3RECOMP_FP_UNNORM_VOL  volume textures sampled in texel coordinates are
 #                       scaled as volumes (Resistance 2's Moonpool effects)
+# RES_DEBUG=1: the diagnostics the port is being brought up with -- where the
+# SPU code runs interpreted (SPU_INTERP_STATS), what each SPURS policy module
+# is doing (SPURS_PM_DUMP), which firmware calls are hot (PS3_HLE_TOP) and
+# where SPU code is loaded from (SPU_GET_RANGE_LOG) -- and, when the game
+# exits, logs/summary-<time>.txt with the lines that matter out of last.log.
+# Each can still be set on its own.
+if [ -n "$RES_DEBUG" ] && [ "$RES_DEBUG" != 0 ]; then
+    export SPU_INTERP_STATS=${SPU_INTERP_STATS:-10} SPURS_PM_DUMP=${SPURS_PM_DUMP:-30}
+    export PS3_HLE_TOP=${PS3_HLE_TOP:-60} SPU_GET_RANGE_LOG=${SPU_GET_RANGE_LOG:-D70000-1012000}
+    echo "Debug: on (summary written to $RES_DATA/logs when the game exits)"
+fi
 unset PS3RECOMP_METAL_HEADLESS
 PS3_HDD0_ROOT=$RES_DATA/dev_hdd0 PS3_HDD1_ROOT=$RES_DATA/dev_hdd1 \
 PS3RECOMP_METAL_FPS=1 PS3_PAD_LOG=${PS3_PAD_LOG:-1} \
@@ -78,5 +89,23 @@ stamp=$!
 wait $game; st=$?
 wait $stamp; rm -f "$LOG.raw"
 echo "The game exited (status $st). Log: $LOG"
+if [ -n "$RES_DEBUG" ] && [ "$RES_DEBUG" != 0 ]; then
+    SUM=$RES_DATA/logs/summary-$(date +%Y%m%d-%H%M%S).txt
+    {
+        echo "== exit status $st, $(date)"
+        echo "== crashes";            grep -E 'killed by signal|SIGSEGV|SIGBUS|fatal|abort' "$LOG" | head -20
+        echo "== frame rate (every 10 s)"; grep -F '[tele]' "$LOG" | awk 'NR % 10 == 1' | cut -c1-170
+        echo "== levels and movies";  grep -E 'fs\] open .*(levels|movies)' "$LOG" | cut -c1-170 | uniq | head -60
+        echo "== dialogs and saves";  grep -E 'cellMsgDialog\] Open|DIALOG\]|cellSaveData\] (SAVE|LOAD) dir' "$LOG" | head -40
+        echo "== main thread when stuck"; grep -F 'guest-tid 1 ' "$LOG" | tail -5
+        echo "== unresolved firmware calls"; grep -o 'unresolved NID 0x[0-9A-F]*' "$LOG" | sort | uniq -c | sort -rn | head -20
+        echo "== SPU code interpreted"; grep -E 'spu-interp\]|spu-interp-hot' "$LOG" | tail -12 | cut -c1-200
+        echo "== SPU code loaded";    grep -F '[get-range]' "$LOG" | cut -c1-160 | head -80
+        echo "== policy modules (last)"; grep -F '[pm-dump]' "$LOG" | tail -8 | cut -c1-200
+        echo "== hot firmware calls"; grep -A12 -F -- '--- HLE calls' "$LOG" | tail -14 | cut -c1-160
+        echo "== last 40 lines";      tail -40 "$LOG" | cut -c1-200
+    } > "$SUM" 2>/dev/null
+    echo "Debug summary: $SUM"
+fi
 exit $st
 }

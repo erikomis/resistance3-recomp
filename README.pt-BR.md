@@ -151,6 +151,7 @@ Saves, as pastas do HD e o log (`last.log`) ficam em
 | `PS3_VFS_ROOT` | a pasta que contém `PS3_GAME/` |
 | `RES_EBOOT_BIN` | o `EBOOT.BIN` que o passo de decrypt lê |
 | `RES_DATA` | saves, pastas do HD e o log |
+| `RES_DEBUG=1` | diagnósticos de desenvolvimento (código SPU interpretado, policy modules da SPURS, chamadas de firmware mais frequentes, de onde o código SPU é carregado) e, ao sair, `logs/summary-<hora>.txt` com as linhas que importam |
 | `RES_UNLOCK_FPS=1` | "Unlock FPS"; o FPS acompanha a taxa de vblank (`PS3_VBLANK_HZ`, padrão 62,5; o patch.yml desaconselha passar de 60–75) |
 | `RES_FOV=<f>` | "Extended FOV" (o valor do RPCS3 é 0.7) |
 | `RES_HTTP_POLL_COMPAT=0` | `cellHttpClientPollConnections` volta ao padrão do toolkit (vindo do Resistance 2, onde o padrão fazia a thread de HTTP girar sem parar) |

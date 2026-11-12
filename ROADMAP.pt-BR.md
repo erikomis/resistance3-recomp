@@ -13,6 +13,14 @@ sendo trabalhado.
   01.00 está traduzido e compilado, e o personagem anda no chão: as sondas de
   chão retornam acertos (4 a 18 por consulta) e a câmera fica na altura do
   piso.
+- A gameplay fica em ~29 fps em média mesmo com o Mac em throttling térmico
+  (eram 18-20 nesse estado): o laço de jobs do igPm agora é traduzido
+  (`lift_r3_igjobs.py --loop`, já no `tools/rebuild.sh`); interpretado, ele
+  zerava o bss de cada job uma quadword por vez, ~20 M passos interpretados
+  por segundo. E uma thread que só lê o timebase (a thread principal
+  esperando os jobs SPU) dorme 10 us por leitura depois de 2000 leituras
+  vazias, em vez de segurar um núcleo a 100% (`PS3_TB_POLL_SLEEP_US`,
+  0 = desligado).
 - Colisão corrigida: o CollBroad deixa a lista de candidatos no próprio local
   store e o CollNarrow a lê por DMA pela janela de LS das threads SPU
   (EA 0xF0000000 + n*0x100000, aqui 0xF0007410). O MFC lia esse endereço como

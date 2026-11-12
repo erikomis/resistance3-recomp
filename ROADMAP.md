@@ -12,6 +12,13 @@ worked on.
 - **Boots, plays movies, opens the menu and plays the first level.** The
   01.00 disc is lifted and built, and the player walks on the ground: ground
   probes return hits (4-18 per query) and the camera stays at floor height.
+- Gameplay averages ~29 fps even with the Mac thermally throttled (it was
+  18-20 there): igPm's job loop is lifted (`lift_r3_igjobs.py --loop`, now in
+  `tools/rebuild.sh`); interpreted, it cleared every job's bss one quadword
+  at a time, ~20 M interpreted steps/s. And a thread that only polls the
+  timebase (the main thread waiting for its SPU jobs) sleeps 10 us per read
+  after 2000 empty reads instead of holding a core at 100%
+  (`PS3_TB_POLL_SLEEP_US`, 0 = off).
 - Fixed collision: CollBroad leaves its candidate list in its own local
   store and CollNarrow GETs it through the SPU thread LS window
   (EA 0xF0000000 + n*0x100000, here 0xF0007410). The MFC read that EA as

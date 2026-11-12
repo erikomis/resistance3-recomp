@@ -125,8 +125,8 @@ for s in $steps; do
             echo "  ${t:t}"
             PS3RECOMP_DIR=$TK "$PY" "$t" --eboot "$E"
         done
-        echo "  lift_r3_igjobs.py (igPm's job modules)"
-        PS3RECOMP_DIR=$TK "$PY" "$here/lift_r3_igjobs.py" --eboot "$E"
+        echo "  lift_r3_igjobs.py (igPm's job modules and its job loop)"
+        PS3RECOMP_DIR=$TK "$PY" "$here/lift_r3_igjobs.py" --eboot "$E" --loop
         echo "  lift_r3_relocmods.py (position-independent sub-modules)"
         PS3RECOMP_DIR=$TK "$PY" "$here/lift_r3_relocmods.py" --eboot "$E" ;;
     build)

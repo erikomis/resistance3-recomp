@@ -30288,7 +30288,7 @@ index 3f7d733..4d340f0 100644
  
  
 diff --git a/runtime/spu/spu_interp.c b/runtime/spu/spu_interp.c
-index 90a2f77..a21b79d 100644
+index 90a2f77..e629025 100644
 --- a/runtime/spu/spu_interp.c
 +++ b/runtime/spu/spu_interp.c
 @@ -19,13 +19,15 @@ uint32_t spu_rchcnt(spu_context* ctx, uint32_t channel);
@@ -30364,6 +30364,11 @@ index 90a2f77..a21b79d 100644
 -    if ((d->op = spu_dec_rr(op11)) != SPU_word) {
 -        if (d->op == SPU_stop) d->imm = insn & 0x3FFF;
 -        return;
+-    }
+-    /* RI7 (11) rotate/shift/gen-control immediates */
+-    if ((d->op = spu_dec_ri7(op11)) != SPU_word) {
+-        d->imm = spu_ri7_unsigned(d->op) ? d->rb : sx(d->rb, 7);
+-        return;
 +    switch ((spu_decode_form)e.form) {
 +    case SPU_F_NONE: break;
 +    case SPU_F_I18:   d->imm = (int32_t)((insn >> 7) & 0x3FFFF); break;
@@ -30385,11 +30390,6 @@ index 90a2f77..a21b79d 100644
 +    case SPU_F_I7S:   d->imm = sx(d->rb, 7); break;
 +    case SPU_F_I7U:   d->imm = d->rb; break;
      }
--    /* RI7 (11) rotate/shift/gen-control immediates */
--    if ((d->op = spu_dec_ri7(op11)) != SPU_word) {
--        d->imm = spu_ri7_unsigned(d->op) ? d->rb : sx(d->rb, 7);
--        return;
--    }
 -    /* LSX (redundant with RR's lqx/stqx, kept for order-parity) */
 -    if ((d->op = spu_dec_lsx(op11)) != SPU_word) return;
 -    d->op = SPU_word;
@@ -30525,6 +30525,35 @@ index 90a2f77..a21b79d 100644
          /* SPU_INTERP_STATS=<seconds>: how much SPU code runs interpreted, by
           * image and 1 KB page of local store. A job module streamed in at an
           * address nothing was lifted for runs here at a fraction of the
+@@ -466,6 +535,11 @@ uint32_t spu_interp_run_until(spu_context* ctx, uint32_t start_lsa, uint32_t sto
+                 s_cnt[k]++;
+             }
+             s_tot++;
++            /* SPU_INTERP_PCS=<image id>: also count that image's interpreted
++             * steps per instruction, and print the hottest ones with the pages. */
++            static long s_pcs_img = -1; static volatile unsigned s_pcs[SPU_LS_SIZE / 4];
++            if (s_pcs_img < 0) { const char* e = getenv("SPU_INTERP_PCS"); s_pcs_img = e ? atol(e) : 0; }
++            if (s_pcs_img && ctx->image_id == (int)s_pcs_img) s_pcs[(ctx->pc & SPU_LS_MASK) >> 2]++;
+             if ((s_tot & 0xFFFF) == 0) {
+                 struct timespec ts; timespec_get(&ts, TIME_UTC);   /* stdlib: fixtures link this file alone */
+                 unsigned long long now = (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
+@@ -482,6 +556,16 @@ uint32_t spu_interp_run_until(spu_context* ctx, uint32_t start_lsa, uint32_t sto
+                                 (uint32_t)s_img[best], s_page[best], s_cnt[best]);
+                         s_cnt[best] = -s_cnt[best];
+                     }
++                    if (s_pcs_img) {
++                        for (int r = 0; r < 32; r++) {
++                            unsigned best = 0;
++                            for (unsigned j = 1; j < SPU_LS_SIZE / 4; j++) if (s_pcs[j] > s_pcs[best]) best = j;
++                            if (!s_pcs[best]) break;
++                            fprintf(stderr, "  pc=0x%05X %u\n", best * 4, s_pcs[best]);
++                            s_pcs[best] = 0;
++                        }
++                        memset((void*)s_pcs, 0, sizeof s_pcs);
++                    }
+                     for (int j = 0; j < IS_N; j++) { s_cnt[j] = 0; }
+                     s_tot = 0; s_t0 = now;
+                 }
 diff --git a/runtime/spu/spu_interp_tables.inc b/runtime/spu/spu_interp_tables.inc
 index 90f9dd8..ee32cf2 100644
 --- a/runtime/spu/spu_interp_tables.inc
@@ -33326,7 +33355,7 @@ index a05eeec..8ac3d6f 100644
  /* ---------------------------------------------------------------------------
   * Globals
 diff --git a/runtime/syscalls/sys_timer.c b/runtime/syscalls/sys_timer.c
-index 5683446..fc652d0 100644
+index 5683446..7a6364b 100644
 --- a/runtime/syscalls/sys_timer.c
 +++ b/runtime/syscalls/sys_timer.c
 @@ -12,7 +12,12 @@
@@ -33342,7 +33371,7 @@ index 5683446..fc652d0 100644
  
  /* ---------------------------------------------------------------------------
   * Globals
-@@ -70,13 +75,45 @@ uint64_t ppu_timebase_now(void)
+@@ -70,13 +75,76 @@ uint64_t ppu_timebase_now(void)
      uint64_t d = (uint64_t)(now.QuadPart - t0);
      uint64_t q = (uint64_t)s_qpc_freq.QuadPart;
      return (d / q) * PS3_TIMEBASE_FREQ + (d % q) * PS3_TIMEBASE_FREQ / q;
@@ -33360,6 +33389,37 @@ index 5683446..fc652d0 100644
 +            epoch = expected;
 +    }
 +    const uint64_t elapsed_ns = ns - epoch;
++    /* A thread that only reads the timebase, thousands of times in a row with
++     * nothing in between, is polling for something another thread (or SPU)
++     * will do: Resistance 3's main thread waits for its SPU jobs that way,
++     * spinning up to 1 ms per wait. On the PS3 that spin is free; here it
++     * holds a host core at 100% and heats the Mac until it throttles. After
++     * PS3_TB_POLL_CALLS back-to-back reads (gaps under PS3_TB_POLL_GAP_NS of
++     * guest work), each further read first sleeps PS3_TB_POLL_SLEEP_US; any
++     * real work between two reads ends it. PS3_TB_POLL_SLEEP_US=0 turns it off. */
++    {
++        static int s_sleep_us = -1; static unsigned s_calls; static uint64_t s_gap;
++        static __thread uint64_t t_last; static __thread unsigned t_streak;
++        if (s_sleep_us < 0) {
++            const char* e = getenv("PS3_TB_POLL_SLEEP_US"); s_sleep_us = e ? atoi(e) : 10;
++            e = getenv("PS3_TB_POLL_CALLS"); s_calls = e ? (unsigned)atoi(e) : 2000u;
++            e = getenv("PS3_TB_POLL_GAP_NS"); s_gap = e ? (uint64_t)atoll(e) : 400u;
++        }
++        if (s_sleep_us > 0) {
++            if (ns - t_last < s_gap) {
++                if (++t_streak >= s_calls) {
++                    struct timespec ts = { 0, (long)s_sleep_us * 1000L };
++                    nanosleep(&ts, NULL);
++                    t_last = host_monotonic_ns();
++                    goto tb_done;
++                }
++            } else {
++                t_streak = 0;
++            }
++            t_last = ns;
++        }
++    }
++tb_done:
 +    return (elapsed_ns / 1000000000ull) * PS3_TIMEBASE_FREQ +
 +           (elapsed_ns % 1000000000ull) * PS3_TIMEBASE_FREQ / 1000000000ull;
 +#endif
@@ -33390,7 +33450,7 @@ index 5683446..fc652d0 100644
  
  static void write_be32(uint32_t addr, uint32_t val)
  {
-@@ -250,6 +287,25 @@ int64_t sys_timer_usleep(ppu_context* ctx)
+@@ -250,6 +318,25 @@ int64_t sys_timer_usleep(ppu_context* ctx)
          } while (qpc_now.QuadPart < qpc_deadline);
      }
  #else
@@ -33416,7 +33476,7 @@ index 5683446..fc652d0 100644
      if (usec > 0) {
          struct timespec ts;
          ts.tv_sec  = (time_t)(usec / 1000000);
-@@ -385,8 +441,7 @@ static uint64_t timer_now_us(void)
+@@ -385,8 +472,7 @@ static uint64_t timer_now_us(void)
      return (uint64_t)(n.QuadPart / f.QuadPart) * 1000000ull +
             (uint64_t)(n.QuadPart % f.QuadPart) * 1000000ull / (uint64_t)f.QuadPart;
  #else

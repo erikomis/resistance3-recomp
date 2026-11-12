@@ -28,11 +28,18 @@ dest=$here/port/spu/jobmods
 [ -f "$TK/tools/lift_jobmods.py" ] || { echo "no toolkit at $TK (run tools/setup_toolkit.sh)" >&2; exit 1; }
 [ -f "$elf" ] || { echo "no $elf: decrypt your EBOOT.BIN first (tools/rebuild.sh decrypt)" >&2; exit 1; }
 rm -rf "$work" "$dest"; mkdir -p "$work" "$dest"
-"$PY" -I "$here/tools/extract_jobmods_elf.py" "$elf" --out "$work"
+"$PY" -I "$here/tools/extract_jobmods_elf.py" "$elf" --out "$work" --entries "$work/entries.txt"
 if ! ls "$work"/jobmod_*.bin >/dev/null 2>&1; then
     echo "no WWS job modules in $elf: nothing to lift"
     exit 0
 fi
+# Routines a module calls only through a table of function pointers get an
+# entry too (extract_jobmods_elf.pointer_table_entries); without one they
+# start in the interpreter on every call.
+# R3_JOBMOD_POINTER_ENTRIES=0 lifts without them, as before (A/B aid).
+extra=$(cat "$work/entries.txt")
+[ "${R3_JOBMOD_POINTER_ENTRIES:-1}" = 0 ] && extra=
+LBP_JOBMOD_EXTRA_FUNCS="${LBP_JOBMOD_EXTRA_FUNCS:+$LBP_JOBMOD_EXTRA_FUNCS,}$extra" \
 "$PY" "$TK/tools/lift_jobmods.py" --jobmods "$work" --out "$dest" \
       --register "$dest/jobmods_register.c" --symbol-prefix r3
 echo "lifted job modules -> $dest (re-run cmake so they are picked up)"

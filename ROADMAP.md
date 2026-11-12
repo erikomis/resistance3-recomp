@@ -27,6 +27,29 @@ worked on.
   loops are rebuilt into a line list bounded by the restart cuts
   (`PS3RECOMP_ENG_LINE_REBUILD`, on): the power lines, indexed line strips,
   used to join each wire to the next across the sky.
+- Gameplay at the 30 fps cap in Haven combat (median 29.9 fps; the RSX
+  thread's CPU time per frame 44 -> 22 ms over the day): the RSX engine skips
+  the legacy state shadow nobody reads, looks textures up through a hash
+  index, copies only the vertex constants that changed, hands remapped
+  triangle lists to Metal as indices, and more (knobs: `GCM_STATE_SHADOW`,
+  `PS3RECOMP_ENG_TEXSLOT_INDEX`, `PS3RECOMP_ENG_VSCB_SYNC`,
+  `PS3RECOMP_ENG_ADDR_FILTER`). A/B in the same fight: 22.9 fps with them off.
+- SPU code interpreted in gameplay fell from ~2.5 M to ~0.0-0.1 M steps/s:
+  the runtime keeps 16 resident lifted regions with least-recently-entered
+  replacement (the physics sub-module 0x00DB2D80 lost its slot to stale
+  ones), checks that a region still holds its code before dispatching into
+  it, and routines a WWS job module calls only through a function-pointer
+  table now get lifted entries. `SPU_RESIDENT_POLICY=old`,
+  `SPU_RESIDENT_VERIFY=0`, `SPU_RESIDENT_SLOTS`, `SPU_NO_ENTRY` for A/B.
+- Pause menu background: the game stashes the frozen frame in its half-res
+  depth buffer's memory; the engine retired that stash falsely, reused the
+  dead slot as live and restored from the depth buffer (depth drawn as
+  colour). Fixed in the engine (a retired slot is never returned as live, a
+  guest copy newer than both targets is the blit source, the engine's own
+  stores no longer retire, the depth copy covers the whole target).
+- Known: an intermittent hang in gameplay (main thread calls a virtual
+  method of an object whose table is zero, while sound banks stream in),
+  present since before these changes; being investigated.
 - Green and dark translucent wedges reaching into the sky (ribbons and
   billboards near effects and the Stalker): RSX vertex arrays with stride 0
   were fetched as tightly packed arrays (OpenGL's meaning). On the RSX stride

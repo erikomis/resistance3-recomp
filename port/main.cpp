@@ -728,14 +728,14 @@ int main(int argc, char** argv)
     setenv("PS3RECOMP_ENG_TEXCACHE_SLOTS", "4096", 0);
 #endif
     /* The render-target table: 128 slots filled in Haven and evicted thousands
-     * of targets a session (6,528 in one), each losing its GPU-only content;
-     * a later sample of one (the pause menu's copy of the scene) read
-     * garbage. 512 of the 1024 the engine allows; PS3RECOMP_ENG_SURFACE_SLOTS
-     * still wins. */
+     * of targets a session (6,528 in one), each losing its GPU-only content.
+     * 256 of the 1024 the engine allows: 512 held ~5.8 GB, and the pause
+     * menu's breakage turned out to be a retired slot reused as live (fixed
+     * in the engine), not the table size. PS3RECOMP_ENG_SURFACE_SLOTS wins. */
 #ifdef _WIN32
-    if (!getenv("PS3RECOMP_ENG_SURFACE_SLOTS")) _putenv_s("PS3RECOMP_ENG_SURFACE_SLOTS", "512");
+    if (!getenv("PS3RECOMP_ENG_SURFACE_SLOTS")) _putenv_s("PS3RECOMP_ENG_SURFACE_SLOTS", "256");
 #else
-    setenv("PS3RECOMP_ENG_SURFACE_SLOTS", "512", 0);
+    setenv("PS3RECOMP_ENG_SURFACE_SLOTS", "256", 0);
 #endif
     /* The first boot's HDD install is done when the first and the last file
      * Resistance 3's installer writes are there (the toolkit's default pair

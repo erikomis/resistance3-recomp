@@ -29,6 +29,28 @@ sendo trabalhado.
   strips e line loops são reconstruídos numa lista de linhas que respeita os
   cortes de restart (`PS3RECOMP_ENG_LINE_REBUILD`, ligado): os fios de luz,
   line strips indexados, ligavam cada fio ao próximo atravessando o céu.
+- Gameplay no limite de 30 fps no combate em Haven (mediana 29,9 fps; o tempo
+  de CPU da thread do RSX por quadro foi de 44 para 22 ms ao longo do dia): o
+  motor RSX deixa de manter o estado "shadow" legado que ninguém lê, acha
+  texturas por um índice de hash, copia só as constantes de vértice que
+  mudaram, entrega listas de triângulos remapeadas ao Metal como índices, e
+  mais (chaves: `GCM_STATE_SHADOW`, `PS3RECOMP_ENG_TEXSLOT_INDEX`,
+  `PS3RECOMP_ENG_VSCB_SYNC`, `PS3RECOMP_ENG_ADDR_FILTER`). A/B na mesma luta:
+  22,9 fps com elas desligadas.
+- Código SPU interpretado na gameplay caiu de ~2,5 M para ~0,0-0,1 M passos/s:
+  o runtime mantém 16 regiões residentes com troca pela usada há mais tempo
+  (o submódulo de física 0x00DB2D80 perdia a vaga para regiões velhas),
+  confere que a região ainda contém o código antes de entrar nela, e rotinas
+  que um job WWS só chama por tabela de ponteiros ganharam entradas
+  traduzidas. `SPU_RESIDENT_POLICY=old`, `SPU_RESIDENT_VERIFY=0`,
+  `SPU_RESIDENT_SLOTS`, `SPU_NO_ENTRY` para A/B.
+- Fundo do menu de pausa: o jogo guarda o quadro congelado na memória do
+  depth buffer de meia resolução; o motor aposentava esse alvo à toa,
+  reaproveitava a vaga morta como viva e restaurava a partir do depth
+  (profundidade pintada como cor). Corrigido no motor.
+- Conhecido: uma trava intermitente na gameplay (a thread principal chama um
+  método virtual de um objeto com a tabela zerada, enquanto bancos de som são
+  carregados), presente desde antes destas mudanças; em investigação.
 - Cunhas translúcidas verdes e escuras indo até o céu (fitas e billboards
   perto de efeitos e do Stalker): arrays de vértices do RSX com stride 0 eram
   lidos como arrays compactados (o sentido do OpenGL). No RSX, stride 0

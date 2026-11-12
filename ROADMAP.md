@@ -19,6 +19,14 @@ worked on.
   timebase (the main thread waiting for its SPU jobs) sleeps 10 us per read
   after 2000 empty reads instead of holding a core at 100%
   (`PS3_TB_POLL_SLEEP_US`, 0 = off).
+- Haven's streets: the RSX engine's texture cache holds 4096 textures
+  (`PS3RECOMP_ENG_TEXCACHE_SLOTS`, port default; it was 1024). At 1024 it
+  evicted and re-uploaded ~9,500 textures every 120 frames outdoors (frames
+  of 300-800 ms, 6 fps), and evicting in the middle of a frame is what made
+  the pause menu's background vertical garbage. Lines, line strips and line
+  loops are rebuilt into a line list bounded by the restart cuts
+  (`PS3RECOMP_ENG_LINE_REBUILD`, on): the power lines, indexed line strips,
+  used to join each wire to the next across the sky.
 - Fixed collision: CollBroad leaves its candidate list in its own local
   store and CollNarrow GETs it through the SPU thread LS window
   (EA 0xF0000000 + n*0x100000, here 0xF0007410). The MFC read that EA as

@@ -717,6 +717,16 @@ int main(int argc, char** argv)
 #else
     setenv("PS3_CAMERA", "0", 0);
 #endif
+    /* The RSX engine's texture cache: Haven's streets use more than the
+     * toolkit's default 1024 textures at once, so it evicted and re-uploaded
+     * ~9,500 of them every 120 frames (~500 MB, 100-240 ms of uploads in a
+     * frame, the game dropping to 6 fps outdoors). 4096 of the 8192 the
+     * engine allows; PS3RECOMP_ENG_TEXCACHE_SLOTS still wins. */
+#ifdef _WIN32
+    if (!getenv("PS3RECOMP_ENG_TEXCACHE_SLOTS")) _putenv_s("PS3RECOMP_ENG_TEXCACHE_SLOTS", "4096");
+#else
+    setenv("PS3RECOMP_ENG_TEXCACHE_SLOTS", "4096", 0);
+#endif
     /* The first boot's HDD install is done when the first and the last file
      * Resistance 3's installer writes are there (the toolkit's default pair
      * is Resistance 2's, which R3 never writes, so every boot asked "The game

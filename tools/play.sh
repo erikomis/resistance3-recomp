@@ -93,16 +93,16 @@ if [ -n "$RES_DEBUG" ] && [ "$RES_DEBUG" != 0 ]; then
     SUM=$RES_DATA/logs/summary-$(date +%Y%m%d-%H%M%S).txt
     {
         echo "== exit status $st, $(date)"
-        echo "== crashes";            grep -E 'killed by signal|SIGSEGV|SIGBUS|fatal|abort' "$LOG" | head -20
-        echo "== frame rate (every 10 s)"; grep -F '[tele]' "$LOG" | awk 'NR % 10 == 1' | cut -c1-170
-        echo "== levels and movies";  grep -E 'fs\] open .*(levels|movies)' "$LOG" | cut -c1-170 | uniq | head -60
-        echo "== dialogs and saves";  grep -E 'cellMsgDialog\] Open|DIALOG\]|cellSaveData\] (SAVE|LOAD) dir' "$LOG" | head -40
-        echo "== main thread when stuck"; grep -F 'guest-tid 1 ' "$LOG" | tail -5
-        echo "== unresolved firmware calls"; grep -o 'unresolved NID 0x[0-9A-F]*' "$LOG" | sort | uniq -c | sort -rn | head -20
-        echo "== SPU code interpreted"; grep -E 'spu-interp\]|spu-interp-hot' "$LOG" | tail -12 | cut -c1-200
-        echo "== SPU code loaded";    grep -F '[get-range]' "$LOG" | cut -c1-160 | head -80
-        echo "== policy modules (last)"; grep -F '[pm-dump]' "$LOG" | tail -8 | cut -c1-200
-        echo "== hot firmware calls"; grep -A12 -F -- '--- HLE calls' "$LOG" | tail -14 | cut -c1-160
+        echo "== crashes";            grep -aE 'killed by signal|SIGSEGV|SIGBUS|fatal|abort' "$LOG" | head -20
+        echo "== frame rate (every 10 s)"; grep -aF '[tele]' "$LOG" | awk 'NR % 10 == 1' | cut -c1-170
+        echo "== levels and movies";  grep -aE 'fs\] open .*(levels|movies)' "$LOG" | cut -c1-170 | uniq | head -60
+        echo "== dialogs and saves";  grep -aE 'cellMsgDialog\] Open|DIALOG\]|cellSaveData\] (SAVE|LOAD) dir' "$LOG" | head -40
+        echo "== main thread when stuck"; grep -aF 'guest-tid 1 ' "$LOG" | tail -5
+        echo "== unresolved firmware calls"; grep -ao 'unresolved NID 0x[0-9A-F]*' "$LOG" | sort | uniq -c | sort -rn | head -20
+        echo "== SPU code interpreted"; grep -aE 'spu-interp\]|spu-interp-hot' "$LOG" | tail -12 | cut -c1-200
+        echo "== SPU code loaded";    grep -aF '[get-range]' "$LOG" | cut -c1-160 | head -80
+        echo "== policy modules (last)"; grep -aF '[pm-dump]' "$LOG" | tail -8 | cut -c1-200
+        echo "== hot firmware calls"; grep -a -A12 -F -- '--- HLE calls' "$LOG" | tail -14 | cut -c1-160
         echo "== last 40 lines";      tail -40 "$LOG" | cut -c1-200
     } > "$SUM" 2>/dev/null
     echo "Debug summary: $SUM"

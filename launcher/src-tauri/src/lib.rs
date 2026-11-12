@@ -858,15 +858,14 @@ fn game_data_dir(play: &Path) -> PathBuf {
     play.join("dev_hdd0/game").join(TITLE_ID)
 }
 
-/// The files the game's first-boot HDD install writes first (the toolkit's
-/// cellGame.c checks the same two to tell cellGameDataCheckCreate2 whether
-/// the install is new; a partial install counts as not done, and the game
-/// resumes it). These are Resistance 2's: once Resistance 3's first boot shows
-/// which files its install writes, they change here and in PS3_GAMEDATA_MARKERS
-/// (tools/play.sh).
-const HDD_INSTALL_MARKERS: &[&str] = &["USRDIR/packed/game/global_cached.psarc", "USRDIR/sound/global/streaming_dialogue.us.dat"];
+/// The first and the last file Resistance 3's first-boot HDD install writes
+/// (port/main.cpp sets the same two as PS3_GAMEDATA_MARKERS, which the
+/// toolkit's cellGame.c checks to tell cellGameDataCheckCreate2 whether the
+/// install is new; a partial install counts as not done, and the game resumes
+/// it).
+const HDD_INSTALL_MARKERS: &[&str] = &["USRDIR/packed/game/global_cached.psarc", "USRDIR/built/sound/bank/ffe79163/resident_sound.dat"];
 
-/// The first boot's HDD install (several hundred MB copied from the disc to
+/// The first boot's HDD install (about 1.5 GB copied from the disc to
 /// dev_hdd0/game/BCUS98176) has not completed here yet.
 fn first_boot(play: &Path) -> bool {
     let d = game_data_dir(play);

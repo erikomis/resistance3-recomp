@@ -717,6 +717,20 @@ int main(int argc, char** argv)
 #else
     setenv("PS3_CAMERA", "0", 0);
 #endif
+    /* The first boot's HDD install is done when the first and the last file
+     * Resistance 3's installer writes are there (the toolkit's default pair
+     * is Resistance 2's, which R3 never writes, so every boot asked "The game
+     * will need to install data on your hard disk drive." and copied the
+     * 1.5 GB again). Order seen in an install log: global_cached.psarc
+     * first, the sound banks in name order last. */
+#ifdef _WIN32
+    if (!getenv("PS3_GAMEDATA_MARKERS"))
+        _putenv_s("PS3_GAMEDATA_MARKERS", "USRDIR/packed/game/global_cached.psarc:"
+                  "USRDIR/built/sound/bank/ffe79163/resident_sound.dat");
+#else
+    setenv("PS3_GAMEDATA_MARKERS", "USRDIR/packed/game/global_cached.psarc:"
+           "USRDIR/built/sound/bank/ffe79163/resident_sound.dat", 0);
+#endif
     /* Real sys_lwcond notifications instead of the 1 ms sleep-and-retry
      * fallback. Resistance 2's job/loader worker pools (func_00B11A80 x14,
      * func_007D9EB8 x8) hand work over through lwconds; at ~1.2 ms per

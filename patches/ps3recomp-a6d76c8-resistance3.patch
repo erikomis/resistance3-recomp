@@ -9656,7 +9656,7 @@ index 0000000..eddf0bf
 +    return 0;
 +}
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index efad9b9..f447325 100644
+index efad9b9..1e79a6b 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
 @@ -27,6 +27,7 @@ static u32 s_gcm_context_ea = 0;
@@ -9768,19 +9768,21 @@ index efad9b9..f447325 100644
      if (waiting) s_flip_tick_seq = s_flip_req_seq;
      FLIP_UNLOCK();
      if (waiting) GCM_PENDING_SET(2);
-@@ -933,6 +978,11 @@ static u32 gcm_fifo_backlog(u32 put, u32 get)
+@@ -933,6 +978,13 @@ static u32 gcm_fifo_backlog(u32 put, u32 get)
  }
  static u32 s_last_ring_off = 0;   /* last offset the walker actually consumed */
  static u32 s_fifo_calloff = 0;
-+/* A detour the title hung off the word at `get` (see gcm_detour_* in the
-+ * walker): where the last JUMP taken was read from, and the JUMP back to that
-+ * very word found standing at `put` when the walker went idle. */
-+static u32 s_last_jump_src = 0xFFFFFFFFu;
-+static u32 s_detour_off = 0, s_detour_tgt = 0, s_detour_w = 0;
++/* The word at an idle `get`, as it stood when `put` moved on (gcm_idle_* in
++ * the walker). idle: the walker is resting at s_idle_off with get == put;
++ * gen: which rest that is; snap_*: what the watcher saw there. */
++static atomic_int s_idle_on;
++static _Atomic u32 s_idle_off, s_idle_gen;
++static _Atomic u32 s_snap_gen, s_snap_w;
++static atomic_int s_snap_valid;
  
  /* ---------------------------------------------------------------------------
   * 2D transfer engines (FIFO subchannels != 0).
-@@ -1189,6 +1239,28 @@ static void nv3089_blit(void)
+@@ -1189,6 +1241,28 @@ static void nv3089_blit(void)
      u32 dbpp = (s_gcm2d.color_fmt == 4u /* R5G6B5 */) ? 2u
               : (s_gcm2d.color_fmt == 1u /* Y8 */)     ? 1u : 4u;
      u32 bpp = (sbpp == dbpp) ? sbpp : 4u;
@@ -9809,7 +9811,7 @@ index efad9b9..f447325 100644
      if (bpp == 4) nv3089_engine_read(in_pitch, out_w, out_h);
      /* NV3089_ROWCOPY (default 1): an unscaled blit copies a row at a time.
       * The per-pixel loop pays a vm_read32 and a vm_write32 per pixel -- the
-@@ -1247,6 +1319,102 @@ static void nv3089_blit(void)
+@@ -1247,6 +1321,102 @@ static void nv3089_blit(void)
                 out_w, out_h, f, src, in_pitch, dst, dst_pitch, out_x, out_y); } }
  }
  
@@ -9912,7 +9914,7 @@ index efad9b9..f447325 100644
  static void gcm_2d_method(u32 subch, u32 method, u32 data)
  {
      /* GCM2D_TRACE=1: histogram of (subchannel, method) actually seen. The
-@@ -1419,6 +1587,19 @@ static void gcm_fifo_bad_branch(const char* kind, u32 target, u32 word)
+@@ -1419,6 +1589,19 @@ static void gcm_fifo_bad_branch(const char* kind, u32 target, u32 word)
  static u32 s_tr_off[GCM_TRACE_N], s_tr_w[GCM_TRACE_N];
  static u32 s_cf_off[8], s_cf_w[8], s_cf_i;   /* last JUMP/CALL words, for GCM_CIRCLE_DUMP */
  static u32 s_tr_i = 0;
@@ -9932,7 +9934,7 @@ index efad9b9..f447325 100644
  
  /* A branch we cannot take leaves the walker pointing at whatever it
   * mis-decoded, and it never recovers -- get freezes for the rest of the
-@@ -1573,6 +1754,11 @@ static void gcm_fifo_dump_around(u32 getoff)
+@@ -1573,6 +1756,11 @@ static void gcm_fifo_dump_around(u32 getoff)
          fprintf(stderr, "[FIFOSTEP] io=%08X w=%08X  type=%u method=0x%04X count=%u\n",
                  s_tr_off[k], w, w >> 29, w & 0x1FFCu, (w >> 18) & 0x7FFu);
      }
@@ -9944,7 +9946,7 @@ index efad9b9..f447325 100644
      for (int k = -20; k <= 2; k++) {
          u32 io = getoff + (u32)(k * 4);
          u32 ea = gcm_io2ea(io);
-@@ -1597,6 +1783,146 @@ static void gcm_ref_push_at(u32 v, u32 getoff)
+@@ -1597,6 +1785,146 @@ static void gcm_ref_push_at(u32 v, u32 getoff)
      s_ref_qtail = t + 1;
  }
  
@@ -10091,7 +10093,7 @@ index efad9b9..f447325 100644
  /* Global fence-publication counter: lets the lwmutex convoy trace correlate a
   * long lock hold with the number of paced fence publications inside it (the
   * 200us pacing x hundreds of one-ahead fences = the ~156ms holds). */
-@@ -1703,14 +2029,38 @@ void cellGcm_ref_on_poll(void)
+@@ -1703,14 +2031,85 @@ void cellGcm_ref_on_poll(void)
          SetEvent(s_gcm_kick_ev);       /* dry: ask the present thread to walk */
  }
  
@@ -10103,6 +10105,53 @@ index efad9b9..f447325 100644
 +static unsigned long long s_sema_blk_t0;
  static uint64_t s_ft_sema_t0;          /* PS3_FTRACE: when the walker began waiting on the current acquire */
  
++/* The put watcher (see the walker, "The link out of a list"). Polls only
++ * while the walker rests; one read of put every 100 us otherwise idle. */
++#ifndef _WIN32
++#include <pthread.h>
++#include <unistd.h>
++static void* gcm_put_watch_main(void* arg)
++{
++    (void)arg;
++    for (;;) {
++        if (!atomic_load(&s_idle_on) || atomic_load(&s_snap_valid)) { usleep(250); continue; }
++        const u32 gen = atomic_load(&s_idle_gen);
++        const u32 off = atomic_load(&s_idle_off);
++        if (vm_base && vm_read32(GCM_CONTROL_GUEST_ADDR + 0) != off) {
++            /* The title stores the link, fences, then stores put. */
++            atomic_thread_fence(memory_order_acquire);
++            const u32 ea = gcm_io2ea(off);
++            const u32 w = ea ? vm_read32(ea) : 0;
++            if (atomic_load(&s_idle_gen) == gen && atomic_load(&s_idle_on)) {
++                atomic_store(&s_snap_w, w);
++                atomic_store(&s_snap_gen, gen);
++                atomic_store(&s_snap_valid, 1);
++            }
++            continue;
++        }
++        usleep(100);
++    }
++    return NULL;
++}
++#endif
++
++static int gcm_put_watch_start(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char* e = getenv("GCM_PUT_WATCH");
++        on = !(e && e[0] == '0');
++#ifndef _WIN32
++        if (on) { pthread_t t;
++                  if (pthread_create(&t, NULL, gcm_put_watch_main, NULL) != 0) on = 0;
++                  else pthread_detach(t); }
++#else
++        on = 0;     /* not wired up on Windows yet */
++#endif
++    }
++    return on;
++}
++
  void cellGcm_rsx_process_fifo(void)
  {
      const uint64_t ft_t0 = PS3_FT_ON() ? ps3_ft_now() : 0;
@@ -10130,7 +10179,7 @@ index efad9b9..f447325 100644
      if (ft_t0) {
          const uint64_t t1 = ps3_ft_now();
          if (t1 - ft_t0 >= ps3_ft_min_ns())
-@@ -1726,12 +2076,16 @@ static int gcm_get_eq_put(void)
+@@ -1726,12 +2125,16 @@ static int gcm_get_eq_put(void)
      return eq;
  }
  
@@ -10148,7 +10197,7 @@ index efad9b9..f447325 100644
            unsigned long long now = ps3_ms_now();
            if (_t0 == 0) _t0 = now;
            if (now - _t0 >= 2000) {
-@@ -1751,6 +2105,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1751,6 +2154,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * by s_gcm_ctx_out_ea, which stays 0 on that path. */
      if (!s_gcm_context_ea && !s_gcm_syscall_mode) return;
      if (!s_inited) { rsx_state_init(&s_state); s_inited = 1; }
@@ -10157,7 +10206,7 @@ index efad9b9..f447325 100644
  
      /* Walk the FIFO exactly like the RSX: chase the guest-written `put` (an IO
       * offset in the control register), decoding method headers and following
-@@ -1760,6 +2116,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1760,6 +2165,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * own command ring, so everything after the jump (including the reference
       * writes its waits spin on) silently never executed. */
      u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
@@ -10165,7 +10214,7 @@ index efad9b9..f447325 100644
      /* The words behind `put` were stored by another thread (the title, or the
       * recycle below) before it stored `put`. On x86 the hardware keeps loads
       * in order; on arm64 it does not, so without an acquire here the ring
-@@ -1772,7 +2129,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1772,7 +2178,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * once at init; if the title repoints gCellGcmCurrentContext at a buffer of
       * its own, every field below moves with it and the FIFO the runtime walks
       * stops being the one the title fills. Reported on change, not per tick. */
@@ -10175,7 +10224,7 @@ index efad9b9..f447325 100644
          static u32 last_ptr = 0xFFFFFFFFu, last_cur = 0xFFFFFFFFu;
          u32 ptr = vm_read32(s_gcm_ctx_out_ea);
          u32 cur = ptr ? vm_read32(ptr + 0x8) : 0;
-@@ -1792,7 +2150,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1792,7 +2199,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
      static int s_drain_every = -1;
      if (s_drain_every < 0) { const char* e = getenv("GCM_DRAINDBG_EVERY");
                               s_drain_every = (e && atoi(e) > 0) ? atoi(e) : 60; }
@@ -10184,7 +10233,7 @@ index efad9b9..f447325 100644
          static int n = 0;
          if (n++ % s_drain_every == 0)
              printf("[DRAIN] getoff=%08X put=%08X ref=%08X ctx.current=%08X\n",
-@@ -1804,8 +2162,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1804,8 +2211,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * present in 0..put. "The title waits for a fence we never published" has
       * two very different causes -- we missed the command, or it was never
       * submitted -- and only a direct scan of the ring separates them. */
@@ -10195,7 +10244,7 @@ index efad9b9..f447325 100644
          unsigned found = 0;
          for (u32 io = 0; io + 8 <= put; io += 4) {
              u32 ea = gcm_io2ea(io); if (!ea) continue;
-@@ -1846,7 +2204,74 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1846,7 +2253,75 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * short of `put` every tick is the signature of a FIFO that can never
       * catch up, and the reason is the whole diagnosis. */
      const char* why = "caught-up";
@@ -10209,55 +10258,56 @@ index efad9b9..f447325 100644
 +     * GCM_PUT_LIVE=0 restores the once-per-pass read. */
 +    static int s_put_live = -1;
 +    if (s_put_live < 0) { const char* e = getenv("GCM_PUT_LIVE"); s_put_live = !(e && e[0] == '0'); }
-+    /* The way back out of a detour, remembered while it was still there.
++    /* The link out of a list the walker is resting at the end of, read when it
++     * was written rather than when the walker next runs.
 +     *
-+     * Resistance 3 runs a one-off command list (its level-start VRAM texture
-+     * moves, NV0039) by hijacking an idle RSX, func_0077Fxxx at 0x0077F7F8:
++     * Resistance 3 chains its command lists: each submit (func_007E65C0) writes
++     * a JUMP at the previous list's `current` -- the word at `put`, where an
++     * idle RSX is resting -- and then moves put to the new list's end. Some of
++     * those lists are a few dozen bytes in the frame allocator (0x0080A100..
++     * 0x0080A138, the same address every frame), and the title gives that
++     * memory back as soon as the frame is over: the RSX fetched the JUMP within
++     * microseconds of the store to put and is long gone. This walker fetches
++     * it on its next pass. Entering Haven that pass is behind 100+ ms of
++     * pipeline builds and texture uploads, the list has become somebody's
++     * strings, and the walker decoded them -- "unset_event", "DialogueSpecs",
++     * a table of pointers taken for 33-word blocks -- for 24 KB, until a word
++     * 0x04000000 swept 256 values over the NV4097 register file. That bound
++     * the garbage target of rsx_draw_engine.c's eng_store_extent_ok, and hung
++     * the game a minute later.
 +     *
-+     *     wait for get == put;  G = get;  saved = *G
-+     *     *G = JUMP list;  list_end[0] = JUMP G;  put = list_end
-+     *     wait for get == put
-+     *     put = G;  *G = saved;            <- and returns: no wait
-+     *
-+     * After the last line the list's memory is the frame allocator's again.
-+     * The RSX fetches the JUMP at list_end within microseconds of that store
-+     * to put, so the title never sees it miss; this walker gets there on its
-+     * next pass, milliseconds later, by which time the render thread has
-+     * submitted its next frame (put is no longer even G) and list_end holds
-+     * somebody's strings. It decoded them -- "unset_event", "DialogueSpecs",
-+     * a table of pointers taken for 33-word blocks -- for 24 KB until a word
-+     * 0x04000000 swept 256 values over the NV4097 register file, context DMAs
-+     * and surface offsets included. That is the garbage target of
-+     * rsx_draw_engine.c's eng_store_extent_ok, and the hang.
-+     *
-+     * The walker cannot run any sooner than its thread does, but it has seen
-+     * the way out: it went idle at list_end with a JUMP standing there that
-+     * leads back to the very word it had jumped in from. No ordinary stream
-+     * has that shape (it would loop); it is a detour whose entry is about to
-+     * be restored. So that JUMP is kept (below, after the loop), and if the
-+     * word has changed by the time put moves on, the kept one is taken.
-+     * GCM_DETOUR_RETURN=0 turns this off. */
-+    if (s_detour_off) {
-+        if (s_fifo_getoff != s_detour_off) {
-+            s_detour_off = 0;
-+        } else if (put != s_fifo_getoff) {
-+            static int on = -1;
-+            if (on < 0) { const char* e = getenv("GCM_DETOUR_RETURN"); on = !(e && e[0] == '0'); }
++     * So a watcher thread stands in for the fetch the RSX would have made:
++     * while the walker rests with get == put it polls put, and the moment put
++     * moves it reads the word at get. If that word was a JUMP and is something
++     * else by the time the walker resumes, the JUMP is taken as read. A word
++     * that has not changed, or was never a JUMP, is decoded as before -- which
++     * is every case but this one. (Guessing the link from the list's shape
++     * does not work: the word at put is usually the previous frame's stale
++     * JUMP, and the title re-points it legitimately.) GCM_PUT_WATCH=0 turns
++     * the watcher off. */
++    if (put != s_fifo_getoff) {     /* still resting: stay armed */
++        const int was_idle = atomic_exchange(&s_idle_on, 0);
++        if (was_idle && atomic_load(&s_snap_valid) &&
++            atomic_load(&s_snap_gen) == atomic_load(&s_idle_gen) &&
++            atomic_load(&s_idle_off) == s_fifo_getoff && put != s_fifo_getoff) {
++            const u32 sw = atomic_load(&s_snap_w);
 +            const u32 dea = gcm_io2ea(s_fifo_getoff);
 +            const u32 now_w = dea ? vm_read32(dea) : 0;
-+            if (on && now_w != s_detour_w) {
++            const u32 tgt = sw & 0x1FFFFFFCu;
++            if (now_w != sw && (sw >> 29) == 1u && tgt != s_fifo_getoff && gcm_io2ea(tgt)) {
 +                static int dn = 0;
 +                if (PS3_LOG_FIRST(dn, 8))
-+                    fprintf(stderr, "[cellGcmSys] FIFO detour at 0x%08X was reclaimed before its"
-+                            " JUMP back was fetched (word 0x%08X, now 0x%08X): returning to"
-+                            " 0x%08X, put=0x%08X\n", s_fifo_getoff, s_detour_w, now_w,
-+                            s_detour_tgt, put);
-+                s_last_jump_src = s_fifo_getoff;
-+                s_fifo_getoff = s_detour_tgt;
-+                if (!gcm_get_eq_put()) vm_write32(GCM_CONTROL_GUEST_ADDR + 4, s_detour_tgt);
++                    fprintf(stderr, "[cellGcmSys] FIFO list end 0x%08X was reclaimed before its"
++                            " JUMP was fetched (JUMP 0x%08X when put moved, 0x%08X now):"
++                            " taking it, put=0x%08X\n", s_fifo_getoff, sw, now_w, put);
++                if (tgt < s_fifo_getoff) s_fifo_back_jumps++;
++                s_fifo_getoff = tgt;
++                if (!gcm_get_eq_put()) vm_write32(GCM_CONTROL_GUEST_ADDR + 4, tgt);
 +            }
-+            s_detour_off = 0;
 +        }
++        atomic_store(&s_snap_valid, 0);
++    } else {
++        atomic_store(&s_snap_valid, 0);     /* put came back: watch again */
 +    }
 +    u32 put_reread = 0;
      while (s_fifo_getoff != put && budget-- > 0) {
@@ -10270,17 +10320,15 @@ index efad9b9..f447325 100644
          u32 ea = gcm_io2ea(s_fifo_getoff);
          if (!ea) {
              /* get is sitting on an IO offset with no mapping -- the title
-@@ -2014,7 +2439,9 @@ static void gcm_rsx_process_fifo_unlocked(void)
-                   break;
+@@ -2015,6 +2490,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
                }
                if (tgt < s_fifo_getoff) s_fifo_back_jumps++;
-+              s_last_jump_src = s_fifo_getoff;
                s_fifo_getoff = tgt;
 +              put_reread = 7u;   /* re-read put before decoding the target */
                /* get is the RSX's fetch pointer: a title polling it sees the
                 * GPU leave a segment as soon as the JUMP out of it is taken.
                 * The end of the pass, where get is otherwise published, can
-@@ -2027,18 +2454,40 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2027,18 +2503,40 @@ static void gcm_rsx_process_fifo_unlocked(void)
              { u32 tgt = w & 0x1FFFFFFCu;
                if (!gcm_io2ea(tgt)) { gcm_fifo_bad_branch("CALL", tgt, w); gcm_fifo_resync_why("unmapped-CALL", &s_fifo_getoff, put); break; }
                s_fifo_calloff = s_fifo_getoff + 4;
@@ -10322,7 +10370,7 @@ index efad9b9..f447325 100644
              /* TCONST_FIFO=1: how the title actually streams vertex constants.
               * NV4097_SET_TRANSFORM_CONSTANT is a 32-register window; if a block
               * arrives NON-INCREMENTING then every dword carries the same method
-@@ -2078,13 +2527,31 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2078,13 +2576,31 @@ static void gcm_rsx_process_fifo_unlocked(void)
                      u32 m = (type == 0) ? method + i * 4 : method;
                      u32 v = vm_read32(dea);
                      u32 la = GCM_LABEL_GUEST_BASE + (s_sema_offset & 0xFFFFu);
@@ -10355,7 +10403,7 @@ index efad9b9..f447325 100644
                      if (m == 0x64u)      s_sema_offset = v;
                      else if (m == 0x6Cu) {
                          /* The RSX has fetched past a RELEASE before its
-@@ -2099,11 +2566,50 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2099,11 +2615,50 @@ static void gcm_rsx_process_fifo_unlocked(void)
                          if (!gcm_get_eq_put())
                              vm_write32(GCM_CONTROL_GUEST_ADDR + 4, s_fifo_getoff + 4 + count * 4);
                          atomic_thread_fence(memory_order_release);
@@ -10407,7 +10455,7 @@ index efad9b9..f447325 100644
              /* GCM_SEMA_ACQUIRE=1 makes ACQUIRE actually block, which is what
               * the hardware does. Off by default: a title whose label nothing
               * ever writes would wedge the drain permanently, and RELEASE on
-@@ -2118,18 +2624,27 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2118,18 +2673,27 @@ static void gcm_rsx_process_fifo_unlocked(void)
                   * <ms> on the same acquire it is consumed and said so. inFAMOUS 2
                   * acquires a label its SPU lighting writes each frame: waiting
                   * here is what orders the RSX's sampling after that write. */
@@ -10439,7 +10487,7 @@ index efad9b9..f447325 100644
              }
          }
                  }
-@@ -2141,6 +2656,47 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2141,6 +2705,47 @@ static void gcm_rsx_process_fifo_unlocked(void)
                  u32 dea = gcm_io2ea(s_fifo_getoff + 4 + i * 4);
                  if (!dea) break;
                  u32 m = (type == 0) ? method + i * 4 : method;
@@ -10487,7 +10535,7 @@ index efad9b9..f447325 100644
                  /* GCM_SET_USER_COMMAND is method 0xEB00, which this decode
                   * splits into subchannel 7 / method 0x0B00 -- so it was landing
                   * in the 2D engine path and being dropped as unrecognised. It
-@@ -2287,15 +2843,23 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2287,15 +2892,23 @@ static void gcm_rsx_process_fifo_unlocked(void)
                  } else if (mfull == 0xE920u || mfull == 0xE924u) {
                      cellGcmSetFlipCommand(vm_read32(dea) & 7u);
                  } else if (subch == 0 || (subch == 1 && !s1_2d)) {
@@ -10516,7 +10564,7 @@ index efad9b9..f447325 100644
                      if (m == 0x1A8) s_report_dma = vm_read32(dea);
                      if (m == 0x1800) {
                          const u32 v = vm_read32(dea), off = v & 0xFFFFFFu, idx = off / 16u;
-@@ -2303,18 +2867,23 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2303,18 +2916,23 @@ static void gcm_rsx_process_fifo_unlocked(void)
                          const u64 ts = gcm_report_timestamp();
                          const int main_mem = s_report_dma == 0xFEED0001u || s_report_dma == 0xBAD68000u;
                          { static int rn = 0; if (PS3_LOG_FIRST(rn, 6)) printf("[GET_REPORT] type=%u off=0x%X dma=0x%08X%c", v >> 24, off, s_report_dma, 10); }
@@ -10551,19 +10599,19 @@ index efad9b9..f447325 100644
                          }
                      }
                  } else
-@@ -2329,6 +2898,21 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2329,6 +2947,21 @@ static void gcm_rsx_process_fifo_unlocked(void)
          s_fifo_getoff += 4;                    /* unknown word: skip */
      }
  
-+    /* Idle at put with a JUMP standing there that returns to the word the
-+     * walker last jumped from: the end of a detour (above). Keep it. */
-+    if (s_fifo_getoff == put && s_detour_off != put) {
-+        const u32 dea = gcm_io2ea(put);
-+        const u32 dw = dea ? vm_read32(dea) : 0;
-+        if ((dw >> 29) == 1u && (dw & 0x1FFFFFFCu) == s_last_jump_src &&
-+            s_last_jump_src != put) {
-+            s_detour_off = put; s_detour_tgt = s_last_jump_src; s_detour_w = dw;
-+        }
++    /* Resting at put: let the watcher catch the word here when put moves
++     * (above). Armed before `get` is published, so the title cannot have
++     * relinked this list yet without the walker having seen it. */
++    if (s_fifo_getoff == put && gcm_put_watch_start() &&
++        !(atomic_load(&s_idle_on) && atomic_load(&s_idle_off) == put)) {
++        atomic_store(&s_snap_valid, 0);
++        atomic_store(&s_idle_off, put);
++        atomic_fetch_add(&s_idle_gen, 1u);
++        atomic_store(&s_idle_on, 1);
 +    }
 +
 +    /* Nothing left to walk, or parked on an acquire: a label queued behind
@@ -10573,7 +10621,7 @@ index efad9b9..f447325 100644
      /* Walker watchdog. Everything above recovers from a *recognised* stall --
       * a branch we cannot take, a park the title abandoned. A walker that stops
       * for any other reason simply freezes `get` for the rest of the run and
-@@ -2403,7 +2987,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2403,7 +3036,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * per tick (gcm_ref_push/gcm_ref_publish_one above) so every SET_REFERENCE
       * value stays observable to equality-waiters. The wrap recycle path polls
       * the drained EA. */
@@ -10582,7 +10630,7 @@ index efad9b9..f447325 100644
          static int n2 = 0;
          if (n2++ % s_drain_every == 0)
              fprintf(stderr, "[DRAINEND] %s: %08X -> %08X (%u bytes), put=%08X\n",
-@@ -2504,6 +3088,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2504,6 +3137,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * If the overflow survives this, `get` is not what it consults. */
      vm_write32(GCM_CONTROL_GUEST_ADDR + 4, gcm_get_eq_put() ? put : s_fifo_getoff);
  
@@ -10591,7 +10639,7 @@ index efad9b9..f447325 100644
      AcquireSRWLockExclusive(&s_ref_pub_lock);                           /* ref */
      gcm_ref_publish_one();
      ReleaseSRWLockExclusive(&s_ref_pub_lock);
-@@ -2534,7 +3120,8 @@ void cellGcm_fifo_recycle(u32 ctx_ea)
+@@ -2534,7 +3169,8 @@ void cellGcm_fifo_recycle(u32 ctx_ea)
      u32 current = vm_read32(ctx_ea + 0x8);
      if (current <= begin) return;                       /* nothing to recycle */
  
@@ -10601,7 +10649,7 @@ index efad9b9..f447325 100644
          printf("[RECYCLE] ring wrap: current=0x%08X -> begin=0x%08X\n", current, begin);
  
      static int s_recdbg = -1;
-@@ -2714,7 +3301,7 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
+@@ -2714,7 +3350,7 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
            }
        } }
  
@@ -10610,7 +10658,7 @@ index efad9b9..f447325 100644
          fprintf(stderr, "[FLIP] SetFlipCommand(buf=%u) set=%d\n",
                  bufferId, bufferId < CELL_GCM_MAX_DISPLAY_BUFFER_NUM ? s_display_buffer_set[bufferId] : -1); }
      if (bufferId >= CELL_GCM_MAX_DISPLAY_BUFFER_NUM)
-@@ -3692,6 +4279,7 @@ void cellGcmTerminate(void)
+@@ -3692,6 +4328,7 @@ void cellGcmTerminate(void)
      memset(s_zcull, 0, sizeof(s_zcull));
      memset(s_report_data, 0, sizeof(s_report_data));
      s_report_dma = 0xFEED0000u;
@@ -10843,7 +10891,7 @@ index b58a830..d44e25c 100644
  typedef struct rsx_dsp_index_array {
      u32 offset;
 diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
-index f99986b..cec7c9b 100644
+index f99986b..f69db72 100644
 --- a/libs/video/rsx_draw_engine.c
 +++ b/libs/video/rsx_draw_engine.c
 @@ -22,6 +22,10 @@
@@ -10901,7 +10949,7 @@ index f99986b..cec7c9b 100644
  
  /* ---- module state -------------------------------------------------------- */
  
-@@ -100,6 +119,18 @@ typedef struct {
+@@ -100,6 +119,24 @@ typedef struct {
      u32 feedback;          /* last immutable own-target copy, engine-owned */
      u64 color_serial;       /* g.write_serial of the last colour write, or 0 */
      int guest_dirty;        /* rendered since guest memory last got a copy   */
@@ -10917,10 +10965,16 @@ index f99986b..cec7c9b 100644
 +     * the memory itself (a CPU copy, an SPU) and owns the content: the
 +     * target is retired and the bind decodes guest memory. */
 +    u64 blit_serial, blit_guest_hash;
++    /* PS3RECOMP_ENG_EVICT_STORE_SMALL: for a small A8R8G8B8 target, the full
++     * hash of the evict_bytes guest bytes under it when it was created (or
++     * after the engine's own last store there); 0 bytes when not taken. The
++     * same hash at eviction means nothing else has used that memory since. */
++    u64 evict_hash;
++    u32 evict_bytes;
  } eng_surface;
  
  typedef struct {
-@@ -107,13 +138,21 @@ typedef struct {
+@@ -107,13 +144,21 @@ typedef struct {
      u32 w, h;
      u32 handle;
      u32 snapshot;          /* sampleable copy, or 0                        */
@@ -10942,7 +10996,7 @@ index f99986b..cec7c9b 100644
  } eng_zdepth;
  
  typedef struct {
-@@ -125,6 +164,8 @@ typedef struct {
+@@ -125,6 +170,8 @@ typedef struct {
      u32 last_hash_frame;
      u64 last_use_serial;
      u32 depth;                  /* slices of a 3D texture, else 1 */
@@ -10951,7 +11005,7 @@ index f99986b..cec7c9b 100644
  } eng_texture;
  
  typedef struct {
-@@ -132,7 +173,7 @@ typedef struct {
+@@ -132,7 +179,7 @@ typedef struct {
      u32 handle;
      u8 fixed;
      u16 tex_used;           /* units the pixel program samples */
@@ -10960,7 +11014,7 @@ index f99986b..cec7c9b 100644
  } eng_pipeline;
  
  typedef struct { u32 first, count; } eng_batch;
-@@ -142,6 +183,13 @@ typedef struct {
+@@ -142,6 +189,13 @@ typedef struct {
      int valid;
  } eng_display_buffer;
  
@@ -10974,7 +11028,7 @@ index f99986b..cec7c9b 100644
  static struct {
      const rsx_draw_backend* be;
      int ready;
-@@ -167,6 +215,7 @@ static struct {
+@@ -167,6 +221,7 @@ static struct {
      u32 last_present_surface;
      u32 last_flip_buffer;
      u64 write_serial;       /* orders colour and depth writes to one address */
@@ -10982,7 +11036,7 @@ index f99986b..cec7c9b 100644
  
      /* staging: decoded texture levels, the constant blocks, the index list */
      u8* tex_staging;
-@@ -177,7 +226,37 @@ static struct {
+@@ -177,7 +232,37 @@ static struct {
      u32* indices;
      u32 index_cap;
  
@@ -11021,7 +11075,7 @@ index f99986b..cec7c9b 100644
  } g;
  
  /* The decompilers' HLSL. The VP decompiler builds bodies up to 192 KB. */
-@@ -203,6 +282,16 @@ static struct {
+@@ -203,6 +288,16 @@ static struct {
      u8* verts;
      u64 verts_cap;
      u32 n_verts;
@@ -11038,7 +11092,7 @@ index f99986b..cec7c9b 100644
  
      /* Canonical ATTR0..15 float4 snapshots for register-based vertices.
       * Bounded separately from compact GPU staging; never fetch stale arrays. */
-@@ -256,6 +345,19 @@ static u64 eng_fnv1a(const void* data, u32 n, u64 hash)
+@@ -256,6 +351,19 @@ static u64 eng_fnv1a(const void* data, u32 n, u64 hash)
  
  /* ---- render state -------------------------------------------------------- */
  
@@ -11058,7 +11112,7 @@ index f99986b..cec7c9b 100644
  void rsx_draw_engine_decode_render_state(const rsx_dispatch* rsx,
                                           rsx_be_render_state* rs)
  {
-@@ -299,6 +401,22 @@ void rsx_draw_engine_decode_render_state(const rsx_dispatch* rsx,
+@@ -299,6 +407,22 @@ void rsx_draw_engine_decode_render_state(const rsx_dispatch* rsx,
      rs->bs_zfail     = rsx_dsp_reg(rsx, M_BACK_STENCIL_OP_ZFAIL);
      rs->bs_zpass     = rsx_dsp_reg(rsx, M_BACK_STENCIL_OP_ZPASS);
      rs->depth_bounds_test = rsx_dsp_reg(rsx, M_DEPTH_BOUNDS_ENABLE) & 1;
@@ -11081,7 +11135,7 @@ index f99986b..cec7c9b 100644
  }
  
  u64 rsx_draw_engine_hash_render_state(const rsx_be_render_state* rs, u64 hash)
-@@ -341,6 +459,7 @@ u64 rsx_draw_engine_hash_render_state(const rsx_be_render_state* rs, u64 hash)
+@@ -341,6 +465,7 @@ u64 rsx_draw_engine_hash_render_state(const rsx_be_render_state* rs, u64 hash)
      ENG_HASH_FIELD(bs_zfail);
      ENG_HASH_FIELD(bs_zpass);
      ENG_HASH_FIELD(depth_bounds_test);
@@ -11089,7 +11143,7 @@ index f99986b..cec7c9b 100644
  #undef ENG_HASH_FIELD
      return hash;
  }
-@@ -386,6 +505,22 @@ u32 rsx_draw_engine_topology_index_count(u32 primitive, u32 source_refs,
+@@ -386,6 +511,22 @@ u32 rsx_draw_engine_topology_index_count(u32 primitive, u32 source_refs,
      }
      case RSX_PRIMITIVE_QUADS:
          return (source_refs / 4u) * 6u;
@@ -11112,7 +11166,7 @@ index f99986b..cec7c9b 100644
      default:
          return 0;
      }
-@@ -406,8 +541,11 @@ void rsx_draw_engine_write_topology_indices(u32 primitive, u32 source_refs,
+@@ -406,8 +547,11 @@ void rsx_draw_engine_write_topology_indices(u32 primitive, u32 source_refs,
      switch (primitive) {
      case RSX_PRIMITIVE_TRIANGLES: {
          const u32 count = source_refs - source_refs % 3u;
@@ -11126,7 +11180,7 @@ index f99986b..cec7c9b 100644
          break;
      }
      case RSX_PRIMITIVE_TRIANGLE_STRIP:
-@@ -476,6 +614,34 @@ void rsx_draw_engine_write_topology_indices(u32 primitive, u32 source_refs,
+@@ -476,6 +620,34 @@ void rsx_draw_engine_write_topology_indices(u32 primitive, u32 source_refs,
              indices[write++] = eng_topology_vertex(occurrence_to_unique, base);
          }
          break;
@@ -11161,7 +11215,7 @@ index f99986b..cec7c9b 100644
      default:
          break;
      }
-@@ -486,10 +652,21 @@ void rsx_draw_engine_write_topology_indices(u32 primitive, u32 source_refs,
+@@ -486,10 +658,21 @@ void rsx_draw_engine_write_topology_indices(u32 primitive, u32 source_refs,
   * engine, whose own expansion stops at quads. Quad strips and polygons are
   * this engine's, so their two cases are decided here rather than in the
   * shared helper, which the vendored rsx_live_draw.c also calls. */
@@ -11184,7 +11238,7 @@ index f99986b..cec7c9b 100644
          (void)refs_remapped;
          *indexed = 1;
          return 1;
-@@ -499,6 +676,30 @@ static int eng_topology_rebuild(u32 primitive, int refs_remapped, int* indexed)
+@@ -499,6 +682,30 @@ static int eng_topology_rebuild(u32 primitive, int refs_remapped, int* indexed)
  
  /* ---- surfaces ------------------------------------------------------------ */
  
@@ -11215,7 +11269,7 @@ index f99986b..cec7c9b 100644
  static rsx_be_format eng_surface_format(u32 color_format)
  {
      switch (color_format & 0x1Fu) {
-@@ -546,6 +747,68 @@ static const void* eng_surface_seed(u32 location, u32 offset, u32 w, u32 h,
+@@ -546,6 +753,148 @@ static const void* eng_surface_seed(u32 location, u32 offset, u32 w, u32 h,
      return g.tex_staging;
  }
  
@@ -11252,7 +11306,34 @@ index f99986b..cec7c9b 100644
 + *   PS3RECOMP_ENG_SURFACE_SLOTS=<n>  slots used of each table (8..1024,
 + *                                    default 128; 64 = the old size)
 + *   PS3RECOMP_ENG_EVICT_STORE=1      store an evicted target before dropping it
-+ * Every eviction is counted; the log has the first few and every 64th. */
++ *   PS3RECOMP_ENG_EVICT_STORE_SMALL=<bytes>
++ *                                    store an evicted A8R8G8B8 target of at
++ *                                    most this many guest bytes even without
++ *                                    EVICT_STORE (default 4096, a 32x32; 0 =
++ *                                    off, the old behaviour)
++ * Every eviction is counted; the log has the first few and every 64th.
++ *
++ * The small ones are stored by default because of Resistance 3: each dynamic
++ * decal on Haven's streets (road patches, stains, debris marks) is lit from
++ * its own pair of 16x16 A8R8G8B8 targets in a pool at 0x038A0000.., filled
++ * once and sampled every frame the decal is drawn (units 4 and 14, format
++ * 0xA5, pitch 64). The pool moves as decals come and go, a few hundred
++ * addresses over minutes, so with 256 slots the table was full 190 s in and
++ * dropped 10-60 of them every 120 frames. A decal whose target went while it
++ * was out of view then read guest memory that never held the picture: zeros,
++ * so ambient and sun terms of 0 under the decal's own alpha -- solid black
++ * patches and bands on the ground, more of them the longer the session and
++ * the further the decal had been from the camera. A 16x16 read back is 1 KB;
++ * the R2 cost above was its 256x256 and larger shadow targets, which this
++ * limit leaves alone.
++ *
++ * A store at eviction is a late write: RSX would have written those bytes
++ * when the target was drawn, and the title may have handed the memory to
++ * something else since (the decal pool is a heap). So a small target is only
++ * stored when the guest bytes under it still hash as they did when it was
++ * created (evict_hash; the engine's own stores there re-take it), and no
++ * other target overlapping it was written later. PS3RECOMP_ENG_EVICT_STORE=1
++ * stores unconditionally, as before. */
 +static int eng_surface_to_guest(u32 slot);
 +static int eng_zdepth_to_guest(u32 slot);
 +static void eng_blit_hash_resync(u32 location, u32 offset, u32 bytes);
@@ -11272,7 +11353,60 @@ index f99986b..cec7c9b 100644
 +    if (on < 0) { const char* e = getenv("PS3RECOMP_ENG_EVICT_STORE"); on = e ? atoi(e) : 0; }
 +    return on;
 +}
-+static u32 s_surface_evictions, s_zeta_evictions;
++/* Whether an evicted colour target is small enough to store regardless of
++ * PS3RECOMP_ENG_EVICT_STORE (see above). eng_surface_to_guest still refuses
++ * anything but an A8R8G8B8 target with a usable pitch. */
++static u32 eng_evict_store_small_bytes(void)
++{
++    static long n = -1;
++    if (n < 0) {
++        const char* e = getenv("PS3RECOMP_ENG_EVICT_STORE_SMALL");
++        n = e ? atol(e) : 4096;
++        if (n < 0) n = 0;
++        if (n > (16l << 20)) n = 16l << 20;
++    }
++    return (u32)n;
++}
++static u32 s_surface_evictions, s_zeta_evictions, s_surface_evict_stored, s_surface_evict_reused;
++static u64 eng_texture_content_hash(u32 location, u32 offset, u32 span, int* readable);
++
++/* Take (or drop) a new target's evict_hash; `pitch` 0 means packed rows. */
++static void eng_evict_hash_take(eng_surface* s, u32 pitch)
++{
++    s->evict_hash = 0;
++    s->evict_bytes = 0;
++    const u64 bytes = (u64)(pitch ? pitch : s->w * 4u) * s->h;
++    if (s->fmt != RSX_BE_FMT_R8G8B8A8 || !bytes || bytes > eng_evict_store_small_bytes()) return;
++    int readable = 0;
++    const u64 h = eng_texture_content_hash(s->location, s->offset, (u32)bytes, &readable);
++    if (readable) { s->evict_hash = h; s->evict_bytes = (u32)bytes; }
++}
++
++/* Whether the target leaving `slot` is one PS3RECOMP_ENG_EVICT_STORE_SMALL
++ * stores: small, drawn or blitted and not stored since, its guest bytes as
++ * they were, and no later-written target on the same bytes. -1 when it is
++ * not a candidate at all, 0 when its memory has moved on. */
++static int eng_evict_store_small(u32 slot)
++{
++    const eng_surface* s = &g.surfaces[slot];
++    const u64 bytes = (u64)(s->pitch ? s->pitch : s->w * 4u) * s->h;
++    if (!s->handle || !s->color_serial || !s->guest_dirty || s->fmt != RSX_BE_FMT_R8G8B8A8 ||
++        !bytes || bytes > eng_evict_store_small_bytes())
++        return -1;
++    if (!s->evict_bytes || s->evict_bytes != bytes) return 0;
++    for (u32 i = 0; i < g.n_surfaces; i++) {
++        const eng_surface* o = &g.surfaces[i];
++        if (i == slot || !o->handle || o->location != s->location ||
++            o->color_serial <= s->color_serial)
++            continue;
++        const u64 olen = (u64)(o->pitch ? o->pitch : o->w * 4u) * o->h;
++        if ((u64)o->offset < (u64)s->offset + bytes && (u64)s->offset < (u64)o->offset + olen)
++            return 0;
++    }
++    int readable = 0;
++    const u64 h = eng_texture_content_hash(s->location, s->offset, (u32)bytes, &readable);
++    return readable && h == s->evict_hash;
++}
 +/* VCACHE_STATS line "targets": creations by cause and GPU round trips. */
 +static u64 s_st_surf_new, s_st_surf_realloc, s_st_surf_evict;
 +static u64 s_st_z_new, s_st_z_realloc, s_st_z_evict;
@@ -11284,7 +11418,7 @@ index f99986b..cec7c9b 100644
  /* The colour target for this (location, offset), created or reallocated when
   * the size or format moved. Returns a slot index, or ENG_INVALID.
   * rsx_live_draw.c's surface_get (2605-2690).
-@@ -565,11 +828,16 @@ static u32 eng_surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+@@ -565,11 +914,16 @@ static u32 eng_surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
      u32 slot = ENG_MAX_SURFACES;
      for (u32 i = 0; i < g.n_surfaces; i++)
          if (g.surfaces[i].location == location && g.surfaces[i].offset == offset) {
@@ -11304,7 +11438,7 @@ index f99986b..cec7c9b 100644
              slot = i;
              break;
          }
-@@ -584,27 +852,71 @@ static u32 eng_surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+@@ -584,27 +938,83 @@ static u32 eng_surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
                      slot < ENG_MAX_SURFACES ? "existing" : "absent");
          return slot < ENG_MAX_SURFACES ? slot : ENG_INVALID;
      }
@@ -11357,12 +11491,23 @@ index f99986b..cec7c9b 100644
      eng_surface* s = &g.surfaces[slot];
 +    if (evicting) {
 +        static u32 logs = 0;
-+        const int stored = eng_evict_store() && s->guest_dirty ? eng_surface_to_guest(slot) : -1;
++        /* Its content, when a draw or a blit left it only on the GPU: for a
++         * small target whose memory nothing else has used
++         * (PS3RECOMP_ENG_EVICT_STORE_SMALL), for any with
++         * PS3RECOMP_ENG_EVICT_STORE. The bind then decodes it from guest
++         * memory like any texture. */
++        const int small = eng_evict_store() ? -1 : eng_evict_store_small(slot);
++        const int stored = (eng_evict_store() || small > 0) && s->guest_dirty
++                               ? eng_surface_to_guest(slot) : -1;
++        if (stored > 0) s_surface_evict_stored++;
++        if (small == 0) s_surface_evict_reused++;
 +        if (PS3_LOG_FIRST(logs, 4) || eng_texlog() || (++s_surface_evictions % 64u) == 0)
 +            fprintf(stderr, "[rsx engine] surface table full: %u:0x%08X %ux%u takes the slot"
-+                            " of 0x%08X %ux%u, the least recently used (frame %u, eviction %u%s)\n",
++                            " of 0x%08X %ux%u, the least recently used (frame %u, eviction %u%s;"
++                            " so far %u stored, %u small ones left as their memory had moved on)\n",
 +                    location, offset, want_w, want_h, s->offset, s->w, s->h, g.frames,
-+                    s_surface_evictions, stored < 0 ? "" : stored ? ", stored" : ", NOT storable");
++                    s_surface_evictions, stored < 0 ? "" : stored ? ", stored" : ", NOT storable",
++                    s_surface_evict_stored, s_surface_evict_reused);
 +    }
      if (s->feedback) { g.be->texture_release(g.be->user, s->feedback); s->feedback = 0; }
 +    if (s->subrect) { g.be->texture_release(g.be->user, s->subrect); s->subrect = 0; }
@@ -11375,11 +11520,12 @@ index f99986b..cec7c9b 100644
      s->guest_dirty = 0;
 +    s->blit_serial = 0;
 +    s->blit_guest_hash = 0;
++    eng_evict_hash_take(s, pitch);
 +    s->last_use = ++g.use_serial;
      if (slot == g.n_surfaces) g.n_surfaces++;
      { static u32 logs = 0; if (PS3_LOG_FIRST(logs, 16))
          fprintf(stderr, "[rsx engine] surface %u:0x%08X %ux%u fmt %d%s\n",
-@@ -704,11 +1016,129 @@ static u32 s_coherence_cap;
+@@ -704,11 +1114,129 @@ static u32 s_coherence_cap;
  /* RSX_ENGINE_COHERENCE_LOG=<n>: log the first n transfers the engine syncs,
   * with how many non-zero pixels moved -- the question when a composite comes
   * out black is whether the GPU surface had anything in it. */
@@ -11510,7 +11656,7 @@ index f99986b..cec7c9b 100644
  }
  
  /* Pixels of `bpp` bytes whose colour (the first three quarters: R,G,B) is
-@@ -754,6 +1184,41 @@ static void eng_row_convert(u8* dst, const u8* src, u32 w, int rgba, int to_gues
+@@ -754,6 +1282,41 @@ static void eng_row_convert(u8* dst, const u8* src, u32 w, int rgba, int to_gues
      }
  }
  
@@ -11552,7 +11698,7 @@ index f99986b..cec7c9b 100644
  void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32 h)
  {
      if (!g.ready || !g.be->readback || !pitch || !w || !h) return;
-@@ -773,11 +1238,17 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
+@@ -773,11 +1336,17 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
      u32 bytes = w * 4u;
      if (xb + bytes > s->w * bpp) bytes = s->w * bpp - xb;
      if (y + h > s->h) h = s->h - y;
@@ -11571,7 +11717,7 @@ index f99986b..cec7c9b 100644
      g.be->readback(g.be->user, s->handle, x, y, n, h, rows, n * bpp);
      if (eng_coherence_log())
          fprintf(stderr, "[rsx engine] guest_read %u:0x%08X %ux%u <- surface 0x%08X (%u bpp) at %u,%u:"
-@@ -799,15 +1270,113 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
+@@ -799,15 +1368,113 @@ void rsx_draw_engine_guest_read(u32 location, u32 offset, u32 pitch, u32 w, u32
          }
          memcpy(dst, src + skip, bytes);
      }
@@ -11685,7 +11831,7 @@ index f99986b..cec7c9b 100644
          if (eng_coherence_log())
              fprintf(stderr, "[rsx engine] guest_wrote %u:0x%08X %ux%u: no A8R8G8B8 surface\n",
                      location, offset, w, h);
-@@ -830,6 +1399,11 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
+@@ -830,6 +1497,11 @@ void rsx_draw_engine_guest_wrote(u32 location, u32 offset, u32 pitch, u32 w, u32
                          " %u non-zero pixels\n", location, offset, w, h, s->offset, x, y,
                  eng_nonzero_pixels(rows, w * h, 4u));
      g.be->color_target_write(g.be->user, s->handle, x, y, w, h, rows, w * 4u);
@@ -11697,7 +11843,7 @@ index f99986b..cec7c9b 100644
  }
  
  static u32 eng_current_surface(void)
-@@ -843,6 +1417,14 @@ static u32 eng_current_surface(void)
+@@ -843,6 +1515,14 @@ static u32 eng_current_surface(void)
  /* One depth target per guest zeta address. Sharing a single resource across a
   * title's shadow, scene and post passes cross-contaminates later depth tests;
   * upstream's ef3271b records that as "the black player-character mass". */
@@ -11712,7 +11858,7 @@ index f99986b..cec7c9b 100644
  static u32 eng_zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
  {
      /* The attachment must cover the whole canvas: an early pass declaring a
-@@ -857,33 +1439,61 @@ static u32 eng_zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+@@ -857,33 +1537,61 @@ static u32 eng_zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
      for (u32 i = 0; i < g.n_zdepths; i++) {
          eng_zdepth* z = &g.zdepths[i];
          if (z->location == location && z->offset == offset) {
@@ -11778,7 +11924,7 @@ index f99986b..cec7c9b 100644
      if (slot == g.n_zdepths) g.n_zdepths++;
      return slot;
  }
-@@ -892,15 +1502,26 @@ static u32 eng_zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+@@ -892,15 +1600,26 @@ static u32 eng_zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
   * a depth-WRITING draw: a write-enable bit alone does not prove the pass
   * produced a usable depth map, and a clear-only zeta falls through to guest
   * memory instead (rsx_live_draw.c:6016-6018, 6265-6269). */
@@ -11808,7 +11954,7 @@ index f99986b..cec7c9b 100644
      z->snapshot_valid = 1;
      return tex;
  }
-@@ -1035,6 +1656,467 @@ static int eng_staging_reserve(u32 bytes)
+@@ -1035,6 +1754,467 @@ static int eng_staging_reserve(u32 bytes)
      return 1;
  }
  
@@ -12276,7 +12422,7 @@ index f99986b..cec7c9b 100644
  /* Decode a guest texture out of guest memory and hand every face and level to
   * the backend. Returns the backend handle, or 0. */
  static u32 eng_texture_upload(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
-@@ -1043,6 +2125,19 @@ static u32 eng_texture_upload(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+@@ -1043,6 +2223,19 @@ static u32 eng_texture_upload(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
      rsx_tex_level lv[RSX_MAX_TEXTURE_LEVELS];
      const u32 nlv = rsx_texture_mip_chain(fmt, w, h, levels, pitch, lv);
      if (!nlv || !lv[0].tl.face_bytes) return 0;
@@ -12296,7 +12442,7 @@ index f99986b..cec7c9b 100644
      /* A volume: every slice of every level decoded and uploaded on its own.
       * inFAMOUS 2's occlusion volumes read an 8x8x8 cone LUT; uploaded as its
       * first slice and sampled in 2D it darkened whole boxes round every prop. */
-@@ -1090,10 +2185,33 @@ static u32 eng_texture_upload(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+@@ -1090,10 +2283,33 @@ static u32 eng_texture_upload(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
      const u8* src = eng_guest_ptr(NULL, location, offset, span);
      if (!src) return 0;
  
@@ -12330,7 +12476,7 @@ index f99986b..cec7c9b 100644
      for (u32 f = 0; f < faces; f++) {
          const u8* face = src + (size_t)f * face_stride;
          for (u32 m = 0; m < nlv; m++) {
-@@ -1105,6 +2223,8 @@ static u32 eng_texture_upload(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+@@ -1105,6 +2321,8 @@ static u32 eng_texture_upload(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
              rsx_texture_decode(g.tex_staging, tl->dst_row_bytes,
                                 face + lv[m].offset, lv[m].w, lv[m].h, tl,
                                 rsx_texture_argb_is_rgba());
@@ -12339,10 +12485,12 @@ index f99986b..cec7c9b 100644
              g.be->texture_upload(g.be->user, handle, f, m, lv[m].w, lv[m].h,
                                   g.tex_staging, tl->dst_row_bytes, tl->rows);
          }
-@@ -1119,28 +2239,154 @@ static u32 eng_texture_upload(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+@@ -1119,22 +2337,148 @@ static u32 eng_texture_upload(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
   * cache full evicts the least recently used entry rather than returning
   * nothing: returning white "made the recovered orphanage render as flat
   * green/black geometry" (rsx_live_draw.c:2326-2334). */
+-static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+-                            u32 levels, u32 pitch, int cube, u32 remap, u32 depth)
 +/* Texture cache traffic, printed with the vertex cache stats
 + * (PS3RECOMP_ENG_VCACHE_STATS): entries created, of which evicted another,
 + * and re-uploads because the guest bytes changed. */
@@ -12354,7 +12502,12 @@ index f99986b..cec7c9b 100644
 + * key comparison decides either way. */
 +static u32 eng_texture_key_bucket(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
 +                                  u32 pitch, u32 remap, u32 cube, u32 depth)
-+{
+ {
+-    if (!w || !h || w > ENG_MAX_TEX_DIM || h > ENG_MAX_TEX_DIM) return 0;
+-    if (!depth) depth = 1;
+-    const u32 span = depth > 1 ? eng_texture_span_3d(fmt, w, h, depth, levels, pitch)
+-                               : eng_texture_span(fmt, w, h, levels, pitch, cube);
+-    if (!span) return 0;
 +    u32 k = offset * 0x9E3779B1u;
 +    k ^= (fmt * 0x85EBCA6Bu) ^ (w << 16 | (h & 0xFFFFu)) ^ pitch * 0xC2B2AE35u ^
 +         remap * 0x27D4EB2Fu ^ location << 30 ^ cube << 29 ^ depth << 20;
@@ -12381,14 +12534,19 @@ index f99986b..cec7c9b 100644
 +    g.tex_next[index] = *head;
 +    *head = (u16)(index + 1u);
 +}
-+
- static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
-                             u32 levels, u32 pitch, int cube, u32 remap, u32 depth)
- {
-     if (!w || !h || w > ENG_MAX_TEX_DIM || h > ENG_MAX_TEX_DIM) return 0;
-     if (!depth) depth = 1;
--    const u32 span = depth > 1 ? eng_texture_span_3d(fmt, w, h, depth, levels, pitch)
--                               : eng_texture_span(fmt, w, h, levels, pitch, cube);
+ 
+-    for (u32 i = 0; i < g.n_textures; i++) {
+-        eng_texture* e = &g.textures[i];
+-        if (e->location != location || e->offset != offset ||
+-            e->format != fmt || e->width != w || e->height != h ||
+-            e->pitch != pitch || e->remap != remap ||
+-            e->cubemap != (u32)(cube != 0) || e->depth != depth)
+-            continue;
++static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
++                            u32 levels, u32 pitch, int cube, u32 remap, u32 depth)
++{
++    if (!w || !h || w > ENG_MAX_TEX_DIM || h > ENG_MAX_TEX_DIM) return 0;
++    if (!depth) depth = 1;
 +    /* The span walks the whole mip chain (rsx_texture_mip_chain) on every
 +     * bind of every unit, a few thousand times a frame for the same few
 +     * hundred textures: that walk was most of this function's own time (7%
@@ -12414,21 +12572,8 @@ index f99986b..cec7c9b 100644
 +            s_span_memo[si].span = span;
 +        }
 +    }
-     if (!span) return 0;
- 
--    for (u32 i = 0; i < g.n_textures; i++) {
--        eng_texture* e = &g.textures[i];
--        if (e->location != location || e->offset != offset ||
--            e->format != fmt || e->width != w || e->height != h ||
--            e->pitch != pitch || e->remap != remap ||
--            e->cubemap != (u32)(cube != 0) || e->depth != depth)
--            continue;
--        if (e->handle && e->last_hash_frame != g.frames) {
--            /* Every cached texture used to be hashed in full every frame;
--             * in a big scene that is hundreds of MB a second for the few
--             * that change. Now the sparse check every frame, and the full
--             * hash when it differs, when this entry's turn has come, for a
--             * small texture, or after a write the engine saw. */
++    if (!span) return 0;
++
 +    /* A scene binds the same few hundred textures every frame, and a linear
 +     * scan of the whole cache per bind averaged several hundred entries.
 +     * Remember where each key was last found; a remembered slot is used only
@@ -12500,16 +12645,10 @@ index f99986b..cec7c9b 100644
 +#undef ENG_TEXTURE_KEY_MATCHES
 +    if (hit) {
 +        eng_texture* e = hit;
-+        if (e->handle && e->last_hash_frame != g.frames) {
-+            /* Every cached texture used to be hashed in full every frame;
-+             * in a big scene that is hundreds of MB a second for the few
-+             * that change. Now the sparse check every frame, and the full
-+             * hash when it differs, when this entry's turn has come, for a
-+             * small texture, or after a write the engine saw. */
-             int readable = 0;
-             u64 hash = e->content_hash;
-             const u64 sparse = eng_texture_sparse_hash(location, offset, span,
-@@ -1153,12 +2399,22 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+         if (e->handle && e->last_hash_frame != g.frames) {
+             /* Every cached texture used to be hashed in full every frame;
+              * in a big scene that is hundreds of MB a second for the few
+@@ -1153,12 +2497,22 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
              if (readable) e->sparse_hash = sparse;
              e->last_hash_frame = g.frames;
              if (readable && hash != e->content_hash) {
@@ -12534,7 +12673,7 @@ index f99986b..cec7c9b 100644
                  }
              }
          }
-@@ -1168,31 +2424,49 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+@@ -1168,31 +2522,49 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
  
      u32 index;
      u32 evicted = 0;
@@ -12588,7 +12727,7 @@ index f99986b..cec7c9b 100644
      return e.handle;
  }
  
-@@ -1267,22 +2541,47 @@ static int eng_zdepth_to_guest(u32 slot)
+@@ -1267,22 +2639,47 @@ static int eng_zdepth_to_guest(u32 slot)
      const u32 bpp = (z->zfmt == 1u) ? 2u : 4u;      /* SURFACE_FORMAT Z16 = 1 */
      const u32 w = z->used_w < z->w ? z->used_w : z->w;
      const u32 h = z->used_h < z->h ? z->used_h : z->h;
@@ -12639,7 +12778,7 @@ index f99986b..cec7c9b 100644
              float d = src[c];
              if (!(d > 0.0f)) d = 0.0f;
              if (d > 1.0f) d = 1.0f;
-@@ -1299,13 +2598,204 @@ static int eng_zdepth_to_guest(u32 slot)
+@@ -1299,13 +2696,211 @@ static int eng_zdepth_to_guest(u32 slot)
          }
      }
      z->guest_dirty = 0;
@@ -12686,6 +12825,13 @@ index f99986b..cec7c9b 100644
 +{
 +    for (u32 i = 0; i < g.n_surfaces; i++) {
 +        eng_surface* s = &g.surfaces[i];
++        /* likewise a small target's evict_hash (PS3RECOMP_ENG_EVICT_STORE_SMALL) */
++        if (s->handle && s->evict_bytes && s->location == location &&
++            eng_ranges_overlap(offset, bytes, s->offset, s->evict_bytes)) {
++            int readable = 0;
++            const u64 h = eng_texture_content_hash(s->location, s->offset, s->evict_bytes, &readable);
++            if (readable) s->evict_hash = h; else s->evict_bytes = 0;
++        }
 +        if (!s->handle || !s->blit_serial || s->location != location ||
 +            !eng_ranges_overlap(offset, bytes, s->offset, eng_surface_guest_bytes(s)))
 +            continue;
@@ -12847,7 +12993,7 @@ index f99986b..cec7c9b 100644
  /* A depth write or clear through the current zeta, recorded with what the
   * guest-memory copy needs to lay it out. */
  static void eng_zdepth_wrote(u32 slot, const rsx_dsp_surface* sf)
-@@ -1315,8 +2805,10 @@ static void eng_zdepth_wrote(u32 slot, const rsx_dsp_surface* sf)
+@@ -1315,8 +2910,10 @@ static void eng_zdepth_wrote(u32 slot, const rsx_dsp_surface* sf)
      z->guest_dirty = 1;
      z->zfmt = sf->depth_format;
      z->pitch = sf->zeta_pitch;
@@ -12858,7 +13004,7 @@ index f99986b..cec7c9b 100644
  }
  
  static void eng_surfaces_wrote(const u32* targets, u32 n_targets)
-@@ -1328,12 +2820,224 @@ static void eng_surfaces_wrote(const u32* targets, u32 n_targets)
+@@ -1328,12 +2925,224 @@ static void eng_surfaces_wrote(const u32* targets, u32 n_targets)
      }
  }
  
@@ -13083,7 +13229,7 @@ index f99986b..cec7c9b 100644
  static void eng_decode_sampler(u32 filter, u32 wrap, u32 control0,
                                 rsx_be_sampler_desc* out)
  {
-@@ -1373,9 +3077,10 @@ static u32 eng_unnorm_units(u32 dim[RSX_DSP_NUM_TEXTURES][2])
+@@ -1373,9 +3182,10 @@ static u32 eng_unnorm_units(u32 dim[RSX_DSP_NUM_TEXTURES][2])
  {
      u32 mask = 0;
      for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; u++) {
@@ -13095,7 +13241,7 @@ index f99986b..cec7c9b 100644
          if (!t.enabled || !(t.format & RSX_TEX_FMT_UNNORM) || !t.width || !t.height)
              continue;
          mask |= 1u << u;
-@@ -1394,6 +3099,7 @@ static u32 eng_volume_mask(void)
+@@ -1394,6 +3204,7 @@ static u32 eng_volume_mask(void)
      if (!g.be->texture_create_3d || !g.be->texture_upload_3d) return 0;
      u32 mask = 0;
      for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; u++) {
@@ -13103,7 +13249,7 @@ index f99986b..cec7c9b 100644
          rsx_dsp_texture t;
          rsx_dsp_get_texture(&g.rsx, u, &t);
          if (t.enabled && !t.cubemap && t.dimension == 3 && t.depth > 1 && t.width && t.height)
-@@ -1406,6 +3112,7 @@ static u32 eng_cube_mask(void)
+@@ -1406,6 +3217,7 @@ static u32 eng_cube_mask(void)
  {
      u32 mask = 0;
      for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; u++) {
@@ -13111,7 +13257,7 @@ index f99986b..cec7c9b 100644
          rsx_dsp_texture t;
          rsx_dsp_get_texture(&g.rsx, u, &t);
          /* A cube face is square by construction, so a non-square image
-@@ -1418,41 +3125,150 @@ static u32 eng_cube_mask(void)
+@@ -1418,41 +3230,150 @@ static u32 eng_cube_mask(void)
      return mask;
  }
  
@@ -13288,7 +13434,7 @@ index f99986b..cec7c9b 100644
  }
  
  /* The layout the active vertex program actually reads. An uncertain analysis
-@@ -1460,14 +3276,8 @@ static int eng_guest_programs(const u8** out_vp, u32* out_vp_instrs,
+@@ -1460,14 +3381,8 @@ static int eng_guest_programs(const u8** out_vp, u32* out_vp_instrs,
  static void eng_vertex_layout(rsx_vertex_layout_plan* layout)
  {
      u32 mask = 0xFFFFu;
@@ -13305,7 +13451,7 @@ index f99986b..cec7c9b 100644
      rsx_vertex_layout_plan_init(layout, mask);
  }
  
-@@ -1601,15 +3411,40 @@ static int eng_debug_fp(u64 fp_hash, u32 pipeline)
+@@ -1601,15 +3516,40 @@ static int eng_debug_fp(u64 fp_hash, u32 pipeline)
  
  /* A guest fragment program's name for the debug knobs: its structural hash
   * (inline constants excluded) seeded with the FNV offset basis, the value
@@ -13326,7 +13472,9 @@ index f99986b..cec7c9b 100644
 +static u32 s_pipe_index[ENG_PIPE_INDEX];   /* table index + 1, 0 = empty */
 +
 +static int eng_pipeline_find(u64 key)
-+{
+ {
+-    return fp_uc && fp_size
+-        ? rsx_fp_structural_hash(fp_uc, fp_size, 1469598103934665603ull) : 0;
 +    u32 p = (u32)(key ^ (key >> 32)) & (ENG_PIPE_INDEX - 1u);
 +    for (u32 n = 0; n < ENG_PIPE_INDEX; n++, p = (p + 1u) & (ENG_PIPE_INDEX - 1u)) {
 +        const u32 v = s_pipe_index[p];
@@ -13334,17 +13482,15 @@ index f99986b..cec7c9b 100644
 +        if (v - 1u < g.n_pipelines && g.pipelines[v - 1u].key == key) return (int)(v - 1u);
 +    }
 +    return -1;
-+}
-+
+ }
+ 
 +static void eng_pipeline_index_add(u64 key, u32 i)
- {
--    return fp_uc && fp_size
--        ? rsx_fp_structural_hash(fp_uc, fp_size, 1469598103934665603ull) : 0;
++{
 +    u32 p = (u32)(key ^ (key >> 32)) & (ENG_PIPE_INDEX - 1u);
 +    while (s_pipe_index[p]) p = (p + 1u) & (ENG_PIPE_INDEX - 1u);
 +    s_pipe_index[p] = i + 1u;
- }
- 
++}
++
 +/* PS3RECOMP_FP_UNNORM_VOL / _VOL_Z / _UNIFORM, read once in eng_pipeline_get
 + * and used by the per-draw constant upload as well. */
 +static int s_un_vol = -1, s_un_vol_z = -1, s_un_uniform = -1;
@@ -13352,7 +13498,7 @@ index f99986b..cec7c9b 100644
  static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
                              const rsx_be_render_state* rs,
                              rsx_be_format rt_fmt, u32 rt_count, int* out_fixed,
-@@ -1618,11 +3453,14 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1618,11 +3558,14 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
      *out_fixed = 1;
      *out_tex_used = 0;
      *out_fp_hash = 0;
@@ -13371,7 +13517,7 @@ index f99986b..cec7c9b 100644
  
      const u32 fp_ctrl  = rsx_dsp_shader_control(&g.rsx);
      const u32 srgb_output = !fixed && rsx_fp_srgb_output_enabled(
-@@ -1631,9 +3469,25 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1631,9 +3574,25 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
      const u32 cube_mask = eng_cube_mask();
      const u32 vol_mask = eng_volume_mask();
      const u32 vtex_mask = eng_vtex_mask();
@@ -13398,7 +13544,7 @@ index f99986b..cec7c9b 100644
      for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; u++) {
          if (!(sampled_units & (1u << u))) continue;
          rsx_dsp_texture t;
-@@ -1642,23 +3496,40 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1642,23 +3601,40 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
              t.cubemap, t.mipmaps, t.filter, t.wrap, t.control0);
          if (shadow[u].enabled) shadow_mask |= 1u << u;
      }
@@ -13446,7 +13592,7 @@ index f99986b..cec7c9b 100644
      for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; ++u)
          if (!(expand_units & (1u << u))) expand_masks[u] = 0;
  
-@@ -1670,10 +3541,44 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1670,10 +3646,44 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
      for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; u++)
          if (!(unnorm_mask & (1u << u)))
              unnorm_dim[u][0] = unnorm_dim[u][1] = 0;
@@ -13494,7 +13640,7 @@ index f99986b..cec7c9b 100644
  
      /* Identity: the vertex program's own bytes, the fragment program's
       * STRUCTURE (its inline constants are hoisted into the buffered block, so
-@@ -1685,9 +3590,13 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1685,9 +3695,13 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
          static const u32 fixed_tag = 0x4E464958u;   /* "XIFN" */
          key = eng_fnv1a(&fixed_tag, sizeof fixed_tag, key);
      } else {
@@ -13511,7 +13657,7 @@ index f99986b..cec7c9b 100644
          const u32 fp_ctrl_key = fp_ctrl & 0x4Eu; /* colour width and fragment depth export */
          key = eng_fnv1a(&fp_ctrl_key, sizeof fp_ctrl_key, key);
          if (srgb_output) key = eng_fnv1a(&srgb_output, sizeof srgb_output, key);
-@@ -1701,25 +3610,87 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1701,25 +3715,87 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
          }
          key = eng_fnv1a(&vtex_mask, sizeof vtex_mask, key);
          key = eng_fnv1a(&unnorm_mask, sizeof unnorm_mask, key);
@@ -13604,7 +13750,7 @@ index f99986b..cec7c9b 100644
      u32 handle = 0;
      int vi = 1, fi = 1;
      u32 nconst = 0;
-@@ -1727,15 +3698,28 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1727,15 +3803,28 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
          snprintf(s_vs_hlsl, sizeof s_vs_hlsl, "%s", kEngFixedVS);
          snprintf(s_ps_hlsl, sizeof s_ps_hlsl, "%s", kEngFixedPS);
      } else {
@@ -13636,7 +13782,7 @@ index f99986b..cec7c9b 100644
              fi = -1;
          if (fi > 0 && srgb_output &&
              rsx_fp_apply_srgb_output(s_ps_hlsl, sizeof s_ps_hlsl) < 0)
-@@ -1745,10 +3729,13 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1745,10 +3834,13 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
                                               rs->alpha_func) < 0)
              fi = -1;
      }
@@ -13652,7 +13798,7 @@ index f99986b..cec7c9b 100644
      /* RSX_ENGINE_SHADER_DUMP=<existing dir>: each new pipeline's two programs
       * as <dir>/pipe<handle>.vs.hlsl and .ps.hlsl, the handle being the one
       * RSX_ENGINE_PASS_DUMP's index names, and a guest fragment program's own
-@@ -1780,85 +3767,874 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1780,85 +3872,874 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
              }
          }
      }
@@ -14582,7 +14728,7 @@ index f99986b..cec7c9b 100644
      if (dc.n_immediate) {
          dc.n_source_refs = dc.n_immediate;
          if (!dc_reserve_verts((u64)dc.n_immediate * layout->stride)) {
-@@ -1872,9 +4648,31 @@ static void dc_fetch(const rsx_vertex_layout_plan* layout, int allow_remap)
+@@ -1872,9 +4753,31 @@ static void dc_fetch(const rsx_vertex_layout_plan* layout, int allow_remap)
          dc.n_verts = dc.n_immediate;
          return;
      }
@@ -14617,7 +14763,7 @@ index f99986b..cec7c9b 100644
  
      if (dc.n_idx && dc.fetch_ok) {
          const u32 base_index = rsx_dsp_vertex_data_base_index(&g.rsx);
-@@ -1889,12 +4687,25 @@ static void dc_fetch(const rsx_vertex_layout_plan* layout, int allow_remap)
+@@ -1889,12 +4792,25 @@ static void dc_fetch(const rsx_vertex_layout_plan* layout, int allow_remap)
  
          for (u32 b = 0; b < dc.n_idx && dc.fetch_ok; b++) {
              const u32 first = dc.idx[b].first, count = dc.idx[b].count;
@@ -14643,7 +14789,7 @@ index f99986b..cec7c9b 100644
              for (u32 i = 0; i < count && dc.fetch_ok; i++) {
                  const u8* p = run ? run + (size_t)i * esz
                      : eng_guest_ptr(NULL, ia_loc, ia.offset + (first + i) * esz, esz);
-@@ -1918,22 +4729,79 @@ static void dc_fetch(const rsx_vertex_layout_plan* layout, int allow_remap)
+@@ -1918,22 +4834,79 @@ static void dc_fetch(const rsx_vertex_layout_plan* layout, int allow_remap)
      /* Only a topology this engine rebuilds through an index buffer may share
       * repeated references. A line strip or a point list is drawn in the order
       * it arrived, so collapsing duplicates would reorder it. */
@@ -14726,7 +14872,7 @@ index f99986b..cec7c9b 100644
      for (u32 i = 0; i < dc.n_refs; i++) {
          u8* dst = layout->stride ? dc.verts + (u64)i * layout->stride : NULL;
          if (!rsx_vertex_fetch_one(&dc.fetch_plan, &dc.refs[i], dst)) {
-@@ -1942,6 +4810,10 @@ static void dc_fetch(const rsx_vertex_layout_plan* layout, int allow_remap)
+@@ -1942,6 +4915,10 @@ static void dc_fetch(const rsx_vertex_layout_plan* layout, int allow_remap)
          }
      }
      dc.n_verts = dc.n_refs;
@@ -14737,7 +14883,7 @@ index f99986b..cec7c9b 100644
  }
  
  /* ---- sink ---------------------------------------------------------------- */
-@@ -2071,6 +4943,209 @@ static u32 eng_color_feedback_failure(u32 unit, const eng_surface* s,
+@@ -2071,6 +5048,209 @@ static u32 eng_color_feedback_failure(u32 unit, const eng_surface* s,
      return ENG_INVALID;
  }
  
@@ -14947,7 +15093,7 @@ index f99986b..cec7c9b 100644
  static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
                                u32 current_zslot, u32 tex_used,
                                u32 textures[RSX_BE_MAX_TEXTURES],
-@@ -2078,22 +5153,42 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
+@@ -2078,22 +5258,42 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
  {
      u32 mask = 0;
      u32 feedback[RSX_BE_MAX_COLOR_TARGETS] = {0};
@@ -14995,7 +15141,7 @@ index f99986b..cec7c9b 100644
              /* A current attachment requires an ordered immutable copy; it
               * cannot be sampled directly while the host pass writes it. */
              for (u32 k = 0; k < n_targets; k++) if (target_slots[k] == i) own = 1;
-@@ -2101,63 +5196,149 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
+@@ -2101,63 +5301,149 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
              sampled = (int)i;
              break;
          }
@@ -15160,7 +15306,7 @@ index f99986b..cec7c9b 100644
              textures[u] = eng_texture_slot(t.location, t.offset, t.format,
                                             t.width, t.height, t.mipmaps, t.pitch,
                                             (int)t.cubemap, t.remap & 0xFFFFu,
-@@ -2165,23 +5346,35 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
+@@ -2165,23 +5451,35 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
              continue;
          }
          if (sampled >= 0) {
@@ -15202,7 +15348,7 @@ index f99986b..cec7c9b 100644
          textures[u] = eng_texture_slot(t.location, t.offset, t.format,
                                         t.width, t.height, t.mipmaps, t.pitch,
                                         (int)t.cubemap, t.remap & 0xFFFFu,
-@@ -2200,6 +5393,7 @@ static u32 sink_bind_vertex_textures(
+@@ -2200,6 +5498,7 @@ static u32 sink_bind_vertex_textures(
          rsx_dsp_vertex_texture vt;
          rsx_dsp_get_vertex_texture(&g.rsx, u, &vt);
          eng_decode_sampler(vt.filter, vt.wrap, vt.control0, &samplers[u]);
@@ -15210,7 +15356,18 @@ index f99986b..cec7c9b 100644
          /* A vertex unit has no crossbar, so its remap is the identity. */
          textures[u] = eng_texture_slot(vt.location, vt.offset, vt.format,
                                         vt.width, vt.height, vt.mipmaps,
-@@ -2279,6 +5473,24 @@ static int pd_capturing(void)
+@@ -2228,7 +5527,9 @@ static u32 sink_bind_vertex_textures(
+  * named after the pass count, and the capture runs on across presents until
+  * RSX_ENGINE_PASS_DUMP_MAX passes (default 64). RSX_ENGINE_PASS_DUMP_DRAWS=1
+  * also writes one line per draw to <dir>/draws.txt: its pipeline, colour
+- * mask, blend, depth state and the textures it samples.
++ * mask, blend, depth state and the textures it samples, each texture at an
++ * address that has been a target followed by S<n>, Z<n> or G! (no target
++ * there any more: the draw reads guest memory).
+  *
+  * The question it answers is which pass of a multi-pass frame first comes out
+  * wrong. */
+@@ -2279,6 +5580,24 @@ static int pd_capturing(void)
      if (s_pd.state == 1 && s_pd.after_s &&
          difftime(time(NULL), s_pd.start) >= (double)s_pd.after_s && pd_open_index())
          fprintf(s_pd.index, "from a draw of frame %u, %u s in\n", g.frames, s_pd.after_s);
@@ -15235,7 +15392,7 @@ index f99986b..cec7c9b 100644
      return s_pd.state == 2;
  }
  
-@@ -2321,7 +5533,7 @@ static void pd_write_surface(u32 slot, const char* path)
+@@ -2321,7 +5640,7 @@ static void pd_write_surface(u32 slot, const char* path)
      FILE* f = (raw && rgb) ? fopen(path, "wb") : NULL;
      if (f) {
          memset(raw, 0, (size_t)s->w * s->h * bpp);
@@ -15244,7 +15401,7 @@ index f99986b..cec7c9b 100644
          g.be->readback(g.be->user, s->handle, 0, 0, s->w, s->h, raw, s->w * bpp);
          for (size_t i = 0; i < (size_t)s->w * s->h; i++) {
              const u8* p = raw + i * bpp;
-@@ -2364,7 +5576,7 @@ static void pd_write_depth(u32 zslot, const char* path, float* lo_out, float* hi
+@@ -2364,7 +5683,7 @@ static void pd_write_depth(u32 zslot, const char* path, float* lo_out, float* hi
      u8* px = (u8*)malloc((size_t)w * h);
      FILE* f = (d && px) ? fopen(path, "wb") : NULL;
      if (f) {
@@ -15253,7 +15410,7 @@ index f99986b..cec7c9b 100644
          if (g.be->depth_readback(g.be->user, z->handle, 0, 0, w, h, d, w * 4u) == 0) {
              float lo = 1.0f, hi = 0.0f;
              for (size_t i = 0; i < (size_t)w * h; i++) {
-@@ -2452,12 +5664,51 @@ static void pd_note(const u32* targets, u32 n_targets, u32 zslot,
+@@ -2452,12 +5771,67 @@ static void pd_note(const u32* targets, u32 n_targets, u32 zslot,
                  " dt %u dw %u at %u |", s_pd.pass, s_pd.draws, pipeline, rs->color_mask,
                  rs->blend_enable, rs->sf_rgb, rs->df_rgb, rs->depth_test, rs->depth_write,
                  rs->alpha_test_enable);
@@ -15276,6 +15433,22 @@ index f99986b..cec7c9b 100644
 +            fprintf(s_pd.draws_log, " t%u %u:0x%08X f%02X %ux%u lv%u p%u flt%08X c0%08X r%04X", u,
 +                    t.location, t.offset, t.format & 0xFFu, t.width, t.height, t.mipmaps, t.pitch,
 +                    t.filter, t.control0, t.remap & 0xFFFFu);
++            /* Where an address that has been a target (eng_addr_note; a hash,
++             * so now and then another address) reads from now: S<n> a colour
++             * surface, Z<n> a depth target, G! neither any more -- evicted or
++             * retired, so guest memory. Nothing for any other texture. */
++            if (eng_addr_maybe_target(t.location, t.offset)) {
++                const char* tag = " G!";
++                u32 n = 0;
++                for (u32 i = 0; i < g.n_zdepths; i++)
++                    if (g.zdepths[i].handle && g.zdepths[i].location == t.location &&
++                        g.zdepths[i].offset == t.offset) { tag = " Z"; n = i; break; }
++                for (u32 i = 0; i < g.n_surfaces; i++)
++                    if (g.surfaces[i].handle && g.surfaces[i].location == t.location &&
++                        g.surfaces[i].offset == t.offset) { tag = " S"; n = i; break; }
++                if (tag[1] == 'G') fputs(tag, s_pd.draws_log);
++                else fprintf(s_pd.draws_log, "%s%u", tag, n);
++            }
 +        }
 +        /* vertex inputs: aN type x size / stride @ offset, or the constant
 +         * value when the attribute has no stream */
@@ -15307,7 +15480,7 @@ index f99986b..cec7c9b 100644
          }
          fprintf(s_pd.draws_log, "\n");
      }
-@@ -2527,6 +5778,155 @@ static void pd_present(u32 presented)
+@@ -2527,6 +5901,155 @@ static void pd_present(u32 presented)
      }
  }
  
@@ -15463,7 +15636,7 @@ index f99986b..cec7c9b 100644
  static void sink_end(void* user, const rsx_dispatch* r)
  {
      (void)user; (void)r;
-@@ -2548,6 +5948,7 @@ static void sink_end(void* user, const rsx_dispatch* r)
+@@ -2548,6 +6071,7 @@ static void sink_end(void* user, const rsx_dispatch* r)
      rsx_topology topology = RSX_TOPOLOGY_TRIANGLES;
      int scratch = 0;
      const int rebuild = eng_topology_rebuild(prim, 0, &scratch) != 0;
@@ -15471,7 +15644,7 @@ index f99986b..cec7c9b 100644
      if (!rebuild) {
          if (rsx_primitive_needs_expansion(prim)) return;
          topology = rsx_primitive_topology(prim);
-@@ -2556,8 +5957,12 @@ static void sink_end(void* user, const rsx_dispatch* r)
+@@ -2556,8 +6080,12 @@ static void sink_end(void* user, const rsx_dispatch* r)
  
      rsx_vertex_layout_plan layout;
      eng_vertex_layout(&layout);
@@ -15485,7 +15658,7 @@ index f99986b..cec7c9b 100644
  
      int indexed = 0;
      u32 n_draw = dc.n_source_refs;
-@@ -2592,10 +5997,11 @@ static void sink_end(void* user, const rsx_dispatch* r)
+@@ -2592,10 +6120,11 @@ static void sink_end(void* user, const rsx_dispatch* r)
      int pipeline_is_fixed = 1;
      u32 tex_used = 0;
      u64 fp_hash = 0;
@@ -15499,7 +15672,7 @@ index f99986b..cec7c9b 100644
      if (!pipeline) return;
      if (fp_hash && eng_debug_fp(fp_hash, pipeline)) return;
  
-@@ -2615,12 +6021,21 @@ static void sink_end(void* user, const rsx_dispatch* r)
+@@ -2615,12 +6144,21 @@ static void sink_end(void* user, const rsx_dispatch* r)
      const u32 vtex_mask = sink_bind_vertex_textures(eng_vtex_mask(), vtextures,
                                                      vsamplers);
  
@@ -15522,7 +15695,7 @@ index f99986b..cec7c9b 100644
      }
  
      /* The transform constant block, then the viewport epilogue the vertex
-@@ -2641,13 +6056,47 @@ static void sink_end(void* user, const rsx_dispatch* r)
+@@ -2641,13 +6179,47 @@ static void sink_end(void* user, const rsx_dispatch* r)
          xf[5] = -((vp.translate[1] - Hv * 0.5f) / (Hv * 0.5f));
          xf[6] = vp.translate[2];
      }
@@ -15574,7 +15747,7 @@ index f99986b..cec7c9b 100644
      if (g.fp_cb_cap < fp_bytes) {
          u8* n = (u8*)realloc(g.fp_cb, fp_bytes);
          if (!n) return;
-@@ -2655,11 +6104,27 @@ static void sink_end(void* user, const rsx_dispatch* r)
+@@ -2655,11 +6227,27 @@ static void sink_end(void* user, const rsx_dispatch* r)
          g.fp_cb_cap = fp_bytes;
      }
      memset(g.fp_cb, 0, fp_bytes);
@@ -15604,7 +15777,7 @@ index f99986b..cec7c9b 100644
  
      pd_note(targets, n_targets, zslot, &rs, pipeline, tex_mask);
  
-@@ -2678,38 +6143,30 @@ static void sink_end(void* user, const rsx_dispatch* r)
+@@ -2678,38 +6266,30 @@ static void sink_end(void* user, const rsx_dispatch* r)
      for (u32 i = 0; i < n_targets; i++) handles[i] = g.surfaces[targets[i]].handle;
      g.be->bind_targets(g.be->user, handles, n_targets, depth_handle);
      g.be->bind_pipeline(g.be->user, pipeline);
@@ -15657,7 +15830,7 @@ index f99986b..cec7c9b 100644
      /* The bounds too: a deferred renderer moves them between its light and
       * sky passes without changing anything else. Raw floats, as written. */
      if (g.be->set_depth_bounds) {
-@@ -2721,17 +6178,54 @@ static void sink_end(void* user, const rsx_dispatch* r)
+@@ -2721,17 +6301,54 @@ static void sink_end(void* user, const rsx_dispatch* r)
          g.be->set_depth_bounds(g.be->user, fmin, fmax);
      }
  
@@ -15714,7 +15887,7 @@ index f99986b..cec7c9b 100644
          eng_zdepth_wrote(zslot, &sf);
      }
  }
-@@ -2751,6 +6245,8 @@ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
+@@ -2751,6 +6368,8 @@ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
                  NULL, 0, 0);
      }
  
@@ -15723,7 +15896,7 @@ index f99986b..cec7c9b 100644
      if (mask & (RSX_CLEAR_COLOR_R | RSX_CLEAR_COLOR_G |
                  RSX_CLEAR_COLOR_B | RSX_CLEAR_COLOR_A)) {
          const u32 c = rsx_dsp_clear_color(&g.rsx);
-@@ -2762,17 +6258,39 @@ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
+@@ -2762,17 +6381,39 @@ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
          };
          /* Every target the set names, not only A: a deferred pass clears its
           * whole G-buffer in one CLEAR_SURFACE, and B, C and D would otherwise
@@ -15769,7 +15942,7 @@ index f99986b..cec7c9b 100644
          u32 flags = 0;
          if (mask & RSX_CLEAR_DEPTH)   flags |= RSX_BE_CLEAR_DEPTH;
          if (mask & RSX_CLEAR_STENCIL) flags |= RSX_BE_CLEAR_STENCIL;
-@@ -2787,13 +6305,28 @@ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
+@@ -2787,13 +6428,28 @@ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
          const float depth = !zs ? 1.0f
                            : z16 ? (float)(zs & 0xFFFFu) / 65535.0f
                                  : (float)(zs >> 8) / 16777215.0f;
@@ -15802,7 +15975,7 @@ index f99986b..cec7c9b 100644
              g.zdepths[zslot].snapshot_valid = 0;
              eng_zdepth_wrote(zslot, &sf);
          }
-@@ -2821,7 +6354,9 @@ static void eng_present(u32 buffer_id)
+@@ -2821,7 +6477,9 @@ static void eng_present(u32 buffer_id)
      if (!g.ready) return;
      const u32 target = eng_present_surface(buffer_id);
      if (target == ENG_INVALID) return;
@@ -15813,7 +15986,7 @@ index f99986b..cec7c9b 100644
          u32 current = eng_current_surface();
          fprintf(stderr, "[rsx capture] frame=%u buffer=%u selected=%u current=%u draws=%u surfaces=%u\n",
                  g.frames, buffer_id, target, current, g.guest_draws, g.n_surfaces);
-@@ -2832,8 +6367,11 @@ static void eng_present(u32 buffer_id)
+@@ -2832,8 +6490,11 @@ static void eng_present(u32 buffer_id)
      }
      pd_present(target);
      g.last_present_surface = target;
@@ -15825,7 +15998,7 @@ index f99986b..cec7c9b 100644
      g.last_guest_draws = g.guest_draws;
      g.guest_draws = 0;
  }
-@@ -2883,8 +6421,14 @@ int rsx_draw_engine_init(u32 width, u32 height)
+@@ -2883,8 +6544,14 @@ int rsx_draw_engine_init(u32 width, u32 height)
      g.height = height ? height : 720;
      { const char* e = getenv("PS3RECOMP_ENG_TEXHASH_FULL");
        s_texhash_full_always = e && *e && strcmp(e, "0") != 0; }
@@ -15840,7 +16013,7 @@ index f99986b..cec7c9b 100644
      if (g.be->init && g.be->init(g.be->user, g.width, g.height) != 0) {
          free(g.vp_cb); g.vp_cb = NULL;
          return -1;
-@@ -2905,6 +6449,8 @@ int rsx_draw_engine_init(u32 width, u32 height)
+@@ -2905,6 +6572,8 @@ int rsx_draw_engine_init(u32 width, u32 height)
      cellGcm_replay_display_buffers_to_engine();
      fprintf(stderr, "[rsx engine] register-file draw engine up (%ux%u)\n",
              g.width, g.height);
@@ -15849,7 +16022,7 @@ index f99986b..cec7c9b 100644
      return 0;
  }
  
-@@ -2913,12 +6459,14 @@ void rsx_draw_engine_shutdown(void)
+@@ -2913,12 +6582,14 @@ void rsx_draw_engine_shutdown(void)
      if (!g.be) return;
      if (g.ready && g.be->submit_and_wait)
          g.be->submit_and_wait(g.be->user, RSX_BE_FLUSH_SHUTDOWN);
@@ -15864,7 +16037,7 @@ index f99986b..cec7c9b 100644
          if (g.surfaces[i].handle) g.be->color_target_release(g.be->user, g.surfaces[i].handle);
      }
      for (u32 i = 0; i < g.n_zdepths; i++)
-@@ -2933,6 +6481,8 @@ void rsx_draw_engine_shutdown(void)
+@@ -2933,6 +6604,8 @@ void rsx_draw_engine_shutdown(void)
      const rsx_draw_backend* be = g.be;
      memset(&g, 0, sizeof g);
      g.be = be;
@@ -15873,7 +16046,7 @@ index f99986b..cec7c9b 100644
  }
  
  void rsx_draw_engine_method(u32 method, u32 arg)
-@@ -2945,6 +6495,12 @@ void rsx_draw_engine_method(u32 method, u32 arg)
+@@ -2945,6 +6618,12 @@ void rsx_draw_engine_method(u32 method, u32 arg)
       * (0xE9xx, 0xEBxx) encode the subchannel bits as part of the address;
       * preserve them with the wider mask. */
      u32 m = (method >= 0xE000u) ? (method & 0xFFFCu) : (method & 0x1FFCu);
@@ -15886,7 +16059,7 @@ index f99986b..cec7c9b 100644
      rsx_dispatch_method(&g.rsx, m, arg);
  }
  
-@@ -2964,7 +6520,7 @@ void rsx_draw_engine_set_display_buffer(u32 buffer_id, u32 location, u32 offset,
+@@ -2964,7 +6643,7 @@ void rsx_draw_engine_set_display_buffer(u32 buffer_id, u32 location, u32 offset,
  void rsx_draw_engine_flush(void)
  {
      if (g.ready && g.be->submit_and_wait)
@@ -26820,7 +26993,7 @@ index 4199c58..c736d65 100644
       * r2 (TOC) gets set from the ELF entry descriptor.
       * r13 (SDA base) gets set from the module loader. */
 diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
-index 4d54b72..c6d909b 100644
+index 4d54b72..48c170c 100644
 --- a/runtime/ppu/ppu_fs.cpp
 +++ b/runtime/ppu/ppu_fs.cpp
 @@ -23,6 +23,7 @@
@@ -26957,7 +27130,7 @@ index 4d54b72..c6d909b 100644
  #ifdef _WIN32
      if (getenv("PS3_FSLOG") && buf==0 && raw_nbytes>0x10000) { static int _b=0; if(_b++<2){ void* fr[30]; unsigned short nn=RtlCaptureStackBackTrace(0,30,fr,0); uintptr_t mb=(uintptr_t)GetModuleHandleA(0); fprintf(stderr,"[FSBT] null-buf read caller rvas:"); for(unsigned short i=0;i<nn&&i<16;i++) fprintf(stderr," %llX",(unsigned long long)((uintptr_t)fr[i]-mb)); fprintf(stderr,"\n"); } }
  #endif
-@@ -502,9 +546,11 @@ static void cellFsWrite(ppu_context* ctx)
+@@ -502,9 +546,20 @@ static void cellFsWrite(ppu_context* ctx)
      uint32_t buf    = (uint32_t)ctx->gpr[4];
      uint64_t nbytes = ctx->gpr[5];
      uint32_t nwr_ptr = (uint32_t)ctx->gpr[6];
@@ -26967,11 +27140,29 @@ index 4d54b72..c6d909b 100644
      fs_prefault(buf, nbytes);   /* kernel READS the buffer; same reserved-page trap */
 -    size_t n = fwrite(vm_base + buf, 1, (size_t)nbytes, g_files[fd]);
 +    fs_set_dir(fd, f, 2);
++    /* Report a failed or short write (upstream #705): a cache/install worker
++     * that loops while its nwrite cursor advances gets no signal on a full or
++     * read-only volume otherwise, and loops forever. ferror() is sticky, so
++     * clear it first. Upstream also flushes on every write so a small buffered
++     * write is caught too; that is left out here (unmeasured cost on a title
++     * that streams its cache in many small writes) -- a failure of buffered
++     * data then surfaces on the next write that spills the buffer. */
++    clearerr(f);
 +    size_t n = fwrite(vm_base + buf, 1, (size_t)nbytes, f);
++    const int write_failed = (n != (size_t)nbytes) || ferror(f);
      /* DIAGNOSTIC (PS3_FSLOG_BT=1): dump the guest back-chain when the game logs the
       * render-config failure, to locate setScreenRenderTargetInternal & the config obj. */
      if (getenv("PS3_FSLOG_BT") && buf && nbytes > 0 && nbytes < 4096 && vm_base) {
-@@ -562,7 +608,7 @@ static void fs_report_block_size(ppu_context* ctx, uint32_t sec_ptr, uint32_t bl
+@@ -527,7 +582,7 @@ static void cellFsWrite(ppu_context* ctx)
+         }
+     }
+     if (nwr_ptr) vm_write64(nwr_ptr, n);
+-    ctx->gpr[3] = CELL_OK;
++    ctx->gpr[3] = write_failed ? (uint64_t)(int64_t)CELL_FS_EIO : CELL_OK;
+ }
+ 
+ /* cellFsFGetBlockSize(int fd, u64* sector_size, u64* block_size)
+@@ -562,7 +617,7 @@ static void fs_report_block_size(ppu_context* ctx, uint32_t sec_ptr, uint32_t bl
  static void cellFsFGetBlockSize(ppu_context* ctx)
  {
      int fd = (int)(uint32_t)ctx->gpr[3];
@@ -26980,7 +27171,7 @@ index 4d54b72..c6d909b 100644
          ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO;
          return;
      }
-@@ -582,12 +628,13 @@ static void cellFsLseek(ppu_context* ctx)
+@@ -582,12 +637,13 @@ static void cellFsLseek(ppu_context* ctx)
      int64_t off   = (int64_t)ctx->gpr[4];
      uint32_t wh   = (uint32_t)ctx->gpr[5];
      uint32_t pos_ptr = (uint32_t)ctx->gpr[6];
@@ -26997,7 +27188,7 @@ index 4d54b72..c6d909b 100644
      if (pos_ptr) vm_write64(pos_ptr, (uint64_t)p);
      ctx->gpr[3] = CELL_OK;
  }
-@@ -635,13 +682,14 @@ static void cellFsFstat(ppu_context* ctx)
+@@ -635,13 +691,14 @@ static void cellFsFstat(ppu_context* ctx)
  {
      int fd      = (int)(uint32_t)ctx->gpr[3];
      uint32_t sb = (uint32_t)ctx->gpr[4];
@@ -27017,7 +27208,7 @@ index 4d54b72..c6d909b 100644
      /* FS_FSTAT_CAP=<bytes>: DIAGNOSTIC. Report a smaller size than the file
       * has. You Don't Know Jack reads a 100 KB archive whole but only probes
       * (open/fstat/close) its 500 KB and 2.4 MB ones; if that branch is driven
-@@ -681,8 +729,9 @@ static void cellFsReaddir(ppu_context* ctx)
+@@ -681,8 +738,9 @@ static void cellFsReaddir(ppu_context* ctx)
      int fd          = (int)(uint32_t)ctx->gpr[3];
      uint32_t dirent = (uint32_t)ctx->gpr[4];
      uint32_t nread_ptr = (uint32_t)ctx->gpr[5];
@@ -27029,7 +27220,7 @@ index 4d54b72..c6d909b 100644
      if (!e) { if (nread_ptr) vm_write64(nread_ptr, 0); ctx->gpr[3] = CELL_OK; return; }
      char full[1300]; struct stat st;
      snprintf(full, sizeof full, "%s/%s", g_dir_path[fd], e->d_name);
-@@ -713,7 +762,8 @@ static void cellFsGetDirectoryEntries(ppu_context* ctx)
+@@ -713,7 +771,8 @@ static void cellFsGetDirectoryEntries(ppu_context* ctx)
          ctx->gpr[3] = 0x8001000Du; // CELL_EFAULT
          return;
      }
@@ -27039,7 +27230,7 @@ index 4d54b72..c6d909b 100644
          ctx->gpr[3] = 0x8001002Au; // CELL_EBADF
          return;
      }
-@@ -721,7 +771,7 @@ static void cellFsGetDirectoryEntries(ppu_context* ctx)
+@@ -721,7 +780,7 @@ static void cellFsGetDirectoryEntries(ppu_context* ctx)
      ctx->gpr[3] = CELL_OK;
      for (; count < bytes / 312; ++count) {
          errno = 0;
@@ -27048,7 +27239,7 @@ index 4d54b72..c6d909b 100644
          if (!entry) {
              if (errno) ctx->gpr[3] = 0x8001002Bu; // CELL_EIO
              break;
-@@ -753,7 +803,13 @@ static void cellFsGetDirectoryEntries(ppu_context* ctx)
+@@ -753,7 +812,13 @@ static void cellFsGetDirectoryEntries(ppu_context* ctx)
  static void cellFsClosedir(ppu_context* ctx)
  {
      int fd = (int)(uint32_t)ctx->gpr[3];
@@ -27063,7 +27254,7 @@ index 4d54b72..c6d909b 100644
      ctx->gpr[3] = CELL_OK;
  }
  
-@@ -797,7 +853,7 @@ static void cellFsUnlink(ppu_context* ctx) { ctx->gpr[3] = CELL_OK; }
+@@ -797,7 +862,7 @@ static void cellFsUnlink(ppu_context* ctx) { ctx->gpr[3] = CELL_OK; }
  static void cellFsFsync(ppu_context* ctx)
  {
      int fd = (int)(uint32_t)ctx->gpr[3];
@@ -27072,7 +27263,7 @@ index 4d54b72..c6d909b 100644
      ctx->gpr[3] = CELL_OK;
  }
  /* File-area preallocation (LBP cache warm-up spams this): host filesystems
-@@ -890,7 +946,7 @@ static void cellFsAioRead(ppu_context* ctx)
+@@ -890,7 +955,7 @@ static void cellFsAioRead(ppu_context* ctx)
  
      size_t n = 0;
      int32_t err = CELL_FS_ENOENT;
@@ -27081,7 +27272,7 @@ index 4d54b72..c6d909b 100644
          if (ppu_vm_size && (uint64_t)buf + size > ppu_vm_size) size = ppu_vm_size - buf;
          fs_prefault(buf, size);
          /* AIO reads are absolute: they must not move the fd's own position,
-@@ -900,7 +956,6 @@ static void cellFsAioRead(ppu_context* ctx)
+@@ -900,7 +965,6 @@ static void cellFsAioRead(ppu_context* ctx)
           * could land between the two, and the next cellFsRead continued from
           * wherever the AIO stopped. Hold the stream lock across seek, read
           * and the seek back (stdio's own calls take the same lock). */
@@ -27090,7 +27281,7 @@ index 4d54b72..c6d909b 100644
          const int64_t pos = (int64_t)HOST_FTELL64(f);
          if (HOST_FSEEK64(f, offset) == 0)
 diff --git a/runtime/ppu/ppu_hle.cpp b/runtime/ppu/ppu_hle.cpp
-index b44816b..78b07e7 100644
+index b44816b..1cbbaed 100644
 --- a/runtime/ppu/ppu_hle.cpp
 +++ b/runtime/ppu/ppu_hle.cpp
 @@ -25,6 +25,13 @@
@@ -27377,11 +27568,115 @@ index b44816b..78b07e7 100644
          }
          /* YDKJ_NETOFFLINE: unresolved network NIDs (sys_net/cellHttp/cellSysutil)
           * default r3=0 (fake success) -> the game stores a NULL handle as an object
+@@ -771,6 +1000,10 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+     uint64_t r = fn(ctx->gpr[3], ctx->gpr[4], ctx->gpr[5], ctx->gpr[6],
+                     ctx->gpr[7], ctx->gpr[8], ctx->gpr[9], ctx->gpr[10]);
+     ctx->gpr[3] = r;   /* PPC return value */
++    /* The handler returned: the thread is no longer inside HLE (upstream #776).
++     * Without this a later crash/watchdog dump blames the last HLE call. */
++    { unsigned t = (unsigned)ctx->thread_id;
++      if (t < PS3_HLE_INFLIGHT_MAX) g_hle_inflight[t] = nullptr; }
+     /* PS3_HLE_PTRCHECK: the guest stores HLE return values as guest pointers, so
+      * an HLE returning a value outside guest RAM (>= 0x10000000) that is not a
+      * CELL_ERROR code (0x8001xxxx / 0x8002xxxx) is leaking a truncated HOST
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index f54150d..a8598e9 100644
+index f54150d..1955919 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
-@@ -972,6 +972,12 @@ extern "C" int ppu_stwcx32(uint64_t ea, uint32_t expected, uint32_t val)
+@@ -806,6 +806,7 @@ extern "C" PPU_THREAD_LOCAL ppu_context* g_active_ctx;   /* fwd (defined below)
+ #define PPU_RESV_INVALID 0x100000000ull   /* out of (uint32_t) ea range */
+ static ppu_context* g_resv_ctxs[PPU_RESV_MAX];
+ static volatile LONG g_resv_ctx_n = 0;
++static volatile LONG g_resv_reg_lock = 0;   /* serializes ppu_resv_register */
+ /* Sharded by address: a single global lock convoyed all stwcx (workers spinning
+  * on a descheduled holder -> loader too slow to finish jobs). Shard by the
+  * 16-byte-block of ea so unrelated structures never serialize; same-structure
+@@ -822,8 +823,30 @@ extern "C" int g_resv_store_active = -1;   /* -1 uninit, 0 off, 1 on */
+ extern "C" void ppu_resv_register(ppu_context* c)
+ {
+     if (g_resv_store_active < 0) g_resv_store_active = getenv("PPU_RESV_STORE") ? 1 : 0;
+-    long i = _InterlockedExchangeAdd(&g_resv_ctx_n, 1);
+-    if (i < PPU_RESV_MAX) g_resv_ctxs[i] = c;
++    /* One entry per DISTINCT context (upstream #758). A ppu_thread_info slot
++     * (and the ctx inside it) is reused by every thread that later starts in
++     * it; counting every start filled the 128 entries after ~127 thread starts
++     * and a context first registered after that was never scanned, so a store
++     * by another thread no longer broke its reservation (a lost update in the
++     * guest's lock-free code). Registration is once per thread start, so the
++     * spin lock is not on a hot path. The entry is written before the count is
++     * published; readers load the count with acquire. */
++    while (_InterlockedExchange(&g_resv_reg_lock, 1)) { while (g_resv_reg_lock) YieldProcessor(); }
++    const long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_RELAXED);   /* only writers change it */
++    for (long i = 0; i < n; i++)
++        if (g_resv_ctxs[i] == c) { _InterlockedExchange(&g_resv_reg_lock, 0); return; }
++    if (n >= PPU_RESV_MAX) {
++        /* A context left out would silently lose cross-thread reservation
++         * breaks: stop instead. PPU_THREAD_MAX slots + the main thread stay
++         * well under the capacity. */
++        fprintf(stderr, "[ppu] FATAL: reservation registry exhausted: capacity=%d distinct contexts\n",
++                PPU_RESV_MAX);
++        fflush(stderr);
++        abort();
++    }
++    g_resv_ctxs[n] = c;
++    __atomic_store_n(&g_resv_ctx_n, (LONG)(n + 1), __ATOMIC_RELEASE);
++    _InterlockedExchange(&g_resv_reg_lock, 0);
+ }
+ /* Where every guest thread is, as a GUEST address.
+  *
+@@ -850,7 +873,7 @@ extern "C" void ppu_resv_register(ppu_context* c)
+  * last DIRECT call site and nothing more. */
+ extern "C" void ppu_report_guest_lrs(void)
+ {
+-    long n = g_resv_ctx_n; if (n > PPU_RESV_MAX) n = PPU_RESV_MAX;
++    long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
+     for (long i = 0; i < n; i++) {
+         ppu_context* c = g_resv_ctxs[i];
+         if (!c) continue;
+@@ -875,7 +898,7 @@ extern "C" void ppu_report_guest_lrs(void)
+ extern "C" void ppu_resv_break_store(uint64_t ea)
+ {
+     uint32_t a = (uint32_t)ea & ~3u;
+-    long n = g_resv_ctx_n; if (n > PPU_RESV_MAX) n = PPU_RESV_MAX;
++    long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
+     for (long i = 0; i < n; i++) {
+         ppu_context* c = g_resv_ctxs[i];
+         if (c && c->reserve_addr < PPU_RESV_INVALID && ((uint32_t)c->reserve_addr & ~3u) == a)
+@@ -893,7 +916,7 @@ extern "C" void ppu_resv_break_line(uint32_t ea)
+ {
+     const uint32_t line = ea & ~127u;
+     ppu_context* self = g_active_ctx;
+-    long n = g_resv_ctx_n; if (n > PPU_RESV_MAX) n = PPU_RESV_MAX;
++    long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
+     for (long i = 0; i < n; i++) {
+         ppu_context* c = g_resv_ctxs[i];
+         if (c && c != self && c->reserve_addr < PPU_RESV_INVALID &&
+@@ -907,7 +930,7 @@ static inline void resv_unlock(volatile LONG* L) { _InterlockedExchange(L, 0); }
+ static inline void ppu_resv_break(uint64_t addr)   /* MUST hold g_resv_lock */
+ {
+     uint64_t a = (uint32_t)addr;   /* match the inline guard: reserve_addr holds (uint32_t)ea */
+-    long n = g_resv_ctx_n; if (n > PPU_RESV_MAX) n = PPU_RESV_MAX;
++    long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
+     for (long i = 0; i < n; i++) {
+         ppu_context* c = g_resv_ctxs[i];
+         if (c && c->reserve_addr == a) c->reserve_addr = PPU_RESV_INVALID;
+@@ -919,13 +942,13 @@ static inline void ppu_resv_break(uint64_t addr)   /* MUST hold g_resv_lock */
+ static inline int resv_diag() { static int v = -1; if (v < 0) v = getenv("RESV_DIAG") ? 1 : 0; return v; }
+ static void resv_check_reg(ppu_context* self)
+ {
+-    long n = g_resv_ctx_n; if (n > PPU_RESV_MAX) n = PPU_RESV_MAX;
++    long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
+     for (long i = 0; i < n; i++) if (g_resv_ctxs[i] == self) return;
+     static ppu_context* seen[64]; static long sn = 0;
+     for (long i = 0; i < sn; i++) if (seen[i] == self) return;
+     if (sn < 64) seen[sn++] = self;
+     fprintf(stderr, "[RESV-UNREG] stwcx/stdcx by UNREGISTERED ctx=%p tid=%llu (n_reg=%ld)\n",
+-            (void*)self, (unsigned long long)self->thread_id, g_resv_ctx_n);
++            (void*)self, (unsigned long long)self->thread_id, n);
+     fflush(stderr);
+ }
+ 
+@@ -972,6 +995,12 @@ extern "C" int ppu_stwcx32(uint64_t ea, uint32_t expected, uint32_t val)
                  fprintf(stderr, "[ppu-steals-resv] %llu: PPU CAS on reserved line 0x%08X\n",
                          n, (uint32_t)ea & ~127u); } }
      if (coh) spu_lockline_lock();
@@ -27394,7 +27689,7 @@ index f54150d..a8598e9 100644
      int ok = __atomic_compare_exchange_n((uint32_t*)(vm_base + ea), &exp_raw, new_raw,
                                           0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 1 : 0;
      if (coh) {
-@@ -1043,6 +1049,9 @@ extern "C" int ppu_stdcx64(uint64_t ea, uint64_t expected, uint64_t val)
+@@ -1043,6 +1072,9 @@ extern "C" int ppu_stdcx64(uint64_t ea, uint64_t expected, uint64_t val)
      if (self && self->reserve_addr != (uint32_t)ea) { resv_unlock(L); return 0; }
      int coh = spu_coh_is_reserved((uint32_t)ea);
      if (coh) spu_lockline_lock();
@@ -27404,7 +27699,7 @@ index f54150d..a8598e9 100644
      int ok = __atomic_compare_exchange_n((uint64_t*)(vm_base + ea), &exp_raw, new_raw, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 1 : 0;
      if (coh) {
          if (ok) spu_coh_notify_write((uint32_t)ea);
-@@ -1497,8 +1506,16 @@ static inline void ppu_rwatch_hit(uint32_t a, int width, void* ra)
+@@ -1497,8 +1529,16 @@ static inline void ppu_rwatch_hit(uint32_t a, int width, void* ra)
      }
      if (s_lo < 0) return;
      if (a < (uint32_t)s_lo || a >= (uint32_t)s_lo + s_len) return;
@@ -27422,7 +27717,7 @@ index f54150d..a8598e9 100644
          /* ...and the VALUE. PPU_WWATCH has always printed what was written;
           * the read side printed only the address, so answering "what did it
           * actually get" meant a second run with a write watch, or a guess --
-@@ -1792,7 +1809,24 @@ static void ww_arm_inline_window(uint32_t ww)
+@@ -1792,7 +1832,24 @@ static void ww_arm_inline_window(uint32_t ww)
      g_ww_lo = ww & ~15u;
      g_ww_hi = (ww & ~15u) + len;
  }
@@ -27447,7 +27742,7 @@ index f54150d..a8598e9 100644
  {
      /* PPU_WVAL=<hexvalue>: log every PPU store that WRITES this value, wherever
       * it lands. PPU_WWATCH answers "who writes this address"; when a bad value is
-@@ -2371,6 +2405,93 @@ extern "C" void ppu_dump_bctrl_ring(uint32_t thread_id, const char* tag)
+@@ -2371,6 +2428,93 @@ extern "C" void ppu_dump_bctrl_ring(uint32_t thread_id, const char* tag)
      fflush(f);
  }
  
@@ -27541,7 +27836,7 @@ index f54150d..a8598e9 100644
  /* PPU_CSCHECK=1: every indirect call must hand back r1, r2 and r14..r31 as it
   * found them (the ABI's non-volatile set; r2 is restored by the caller's TOC
   * reload, so it is left out). A lifted function that does not -- a switch
-@@ -3694,6 +3815,53 @@ extern "C" void ppu_register_opd_fixup(uint32_t opd, uint32_t code, uint32_t toc
+@@ -3694,6 +3838,53 @@ extern "C" void ppu_register_opd_fixup(uint32_t opd, uint32_t code, uint32_t toc
          s_opd_fixups[s_opd_fixup_n].code = code; s_opd_fixups[s_opd_fixup_n].toc = toc; s_opd_fixup_n++; }
  }
  
@@ -27595,7 +27890,7 @@ index f54150d..a8598e9 100644
  extern "C" uint64_t ppu_guest_call(uint32_t opd_addr,
                                     uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                                     uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7)
-@@ -3718,14 +3886,10 @@ extern "C" uint64_t ppu_guest_call(uint32_t opd_addr,
+@@ -3718,14 +3909,10 @@ extern "C" uint64_t ppu_guest_call(uint32_t opd_addr,
                  vm_read32(opd_addr + 8), vm_read32(opd_addr + 12));
          return 0; }
  
@@ -27612,7 +27907,7 @@ index f54150d..a8598e9 100644
      ctx.gpr[2]  = toc;
      ctx.gpr[3]  = a0; ctx.gpr[4] = a1; ctx.gpr[5] = a2; ctx.gpr[6] = a3;
      ctx.gpr[7]  = a4; ctx.gpr[8] = a5; ctx.gpr[9] = a6; ctx.gpr[10] = a7;
-@@ -3765,12 +3929,10 @@ extern "C" uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc,
+@@ -3765,12 +3952,10 @@ extern "C" uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc,
      ppu_fn fn = ppu_lookup(code);
      if (!fn) { fprintf(stderr, "[ppu] guest_call_ct: code 0x%08X not registered\n", code); return 0; }
  
@@ -27627,7 +27922,7 @@ index f54150d..a8598e9 100644
      ctx.gpr[2]  = toc;
      ctx.gpr[3]  = a0; ctx.gpr[4] = a1; ctx.gpr[5] = a2; ctx.gpr[6] = a3;
      ctx.gpr[7]  = a4; ctx.gpr[8] = a5; ctx.gpr[9] = a6; ctx.gpr[10] = a7;
-@@ -3811,6 +3973,7 @@ extern "C" int ppu_run(uint32_t entry_opd, uint32_t stack_top)
+@@ -3811,6 +3996,7 @@ extern "C" int ppu_run(uint32_t entry_opd, uint32_t stack_top)
  
      ppu_context ctx;
      memset(&ctx, 0, sizeof(ctx));
@@ -28869,7 +29164,7 @@ index 0000000..5809552
 +    return s_fails ? 1 : 0;
 +}
 diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
-index 59f5e4b..9f14bd2 100644
+index 59f5e4b..056c2cf 100644
 --- a/runtime/spu/spu_channels.c
 +++ b/runtime/spu/spu_channels.c
 @@ -27,7 +27,7 @@
@@ -29005,7 +29300,18 @@ index 59f5e4b..9f14bd2 100644
  /* Run a lifted SPU entry with a halt landing pad. Returns 1 if the job halted
   * (via spu_halt), 0 if it returned normally. */
  int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
-@@ -262,8 +281,9 @@ int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
+@@ -252,6 +271,10 @@ int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
+          * Re-enter its target with the same guest state on the driver stack. */
+         ctx->host_depth = 0;
+         g_spu_trampoline_fn = 0;
++        /* The restart abandoned every drain frame, including its return PC.
++         * A stale stop point can end a later interpreter fallback early
++         * (upstream #761). */
++        ctx->drain_ret_pc = 0;
+         spu_indirect_branch(ctx);
+         SPU_DRAIN(ctx);
+         break;
+@@ -262,8 +285,9 @@ int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
           * halts (stop -> longjmp) or the trampoline empties. Nested brsl/bisl
           * calls drain inside their own call brackets (see the lifter). */
          entry(ctx);
@@ -29017,7 +29323,7 @@ index 59f5e4b..9f14bd2 100644
                fprintf(stderr, "[argwatch] after entry(): img=%d pc=0x%05X "
                        "r2=0x%08X r3=0x%08X r4=0x%08X\n", ctx->image_id,
                        (uint32_t)ctx->pc & SPU_LS_MASK, ctx->gpr[2]._u32[0],
-@@ -272,6 +292,13 @@ int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
+@@ -272,6 +296,13 @@ int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
          SPU_DRAIN(ctx);
      }
      yz_lockstep_unregister(ctx);   /* leave the ring; hand the token onward */
@@ -29031,7 +29337,7 @@ index 59f5e4b..9f14bd2 100644
      s_spu_halt_armed = outer_armed;
      if (outer_armed) memcpy(s_spu_halt_env, outer_env, sizeof(jmp_buf));
      return halted;
-@@ -317,16 +344,53 @@ static DWORD WINAPI spu_pcsample_thread(LPVOID p)
+@@ -317,16 +348,53 @@ static DWORD WINAPI spu_pcsample_thread(LPVOID p)
      }
  }
  
@@ -29090,7 +29396,7 @@ index 59f5e4b..9f14bd2 100644
          }
      }
      ReleaseSRWLockShared(&s_mfc_claim_lock);
-@@ -334,10 +398,11 @@ static mfc_engine* mfc_for(spu_context* ctx)
+@@ -334,10 +402,11 @@ static mfc_engine* mfc_for(spu_context* ctx)
      /* A concurrent miss may publish while the read lock is released. Recheck
       * under the writer lock before creating this context's private engine. */
      AcquireSRWLockExclusive(&s_mfc_claim_lock);
@@ -29103,7 +29409,7 @@ index 59f5e4b..9f14bd2 100644
          }
      }
      spu_mfc_slot* slot = (spu_mfc_slot*)malloc(sizeof(*slot));
-@@ -351,7 +416,7 @@ static mfc_engine* mfc_for(spu_context* ctx)
+@@ -351,7 +420,7 @@ static mfc_engine* mfc_for(spu_context* ctx)
      slot->next = s_mfc_slots;
      s_mfc_slots = slot;
      ReleaseSRWLockExclusive(&s_mfc_claim_lock);
@@ -29112,7 +29418,7 @@ index 59f5e4b..9f14bd2 100644
  }
  
  void spu_mfc_release(spu_context* ctx)
-@@ -363,6 +428,7 @@ void spu_mfc_release(spu_context* ctx)
+@@ -363,6 +432,7 @@ void spu_mfc_release(spu_context* ctx)
          spu_mfc_slot* slot = *link;
          *link = slot->next;
          free(slot);
@@ -29120,7 +29426,7 @@ index 59f5e4b..9f14bd2 100644
          break;
      }
      ReleaseSRWLockExclusive(&s_mfc_claim_lock);
-@@ -379,6 +445,7 @@ void spu_mfc_forget_range(uintptr_t lo, uintptr_t hi)
+@@ -379,6 +449,7 @@ void spu_mfc_forget_range(uintptr_t lo, uintptr_t hi)
          if (owner >= lo && owner < hi) {
              *link = slot->next;
              free(slot);
@@ -29128,7 +29434,7 @@ index 59f5e4b..9f14bd2 100644
          } else {
              link = &slot->next;
          }
-@@ -681,7 +748,7 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+@@ -681,7 +752,7 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
              memcmp(mem, ctx->resv_line, MFC_ATOMIC_LINE) == 0) {
              { extern void spu_lockguard_check(spu_context*, uint32_t, const uint8_t*, uint32_t, const char*);
                spu_lockguard_check(ctx, ea, ls, MFC_ATOMIC_LINE, "PUTLLC"); }
@@ -29137,9 +29443,11 @@ index 59f5e4b..9f14bd2 100644
              /* A committing PUTLLC is a line write like any other, so every
               * PEER reservation on it is lost and its SPU takes SPU_EVENT_LR.
               * Silent, this is the same lost update the PPU half was added to
-@@ -767,10 +834,10 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+@@ -766,11 +837,12 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+                       ctx->atomic_stat ? "FAIL" : "OK",
                        ctx->gpr[0]._u32[0] & SPU_LS_MASK, ea); }
          ctx->resv_valid = 0;                           /* reservation consumed */
++        spu_coh_live_end(ctx);
          spu_lockline_unlock();
 -        if (ctx->atomic_stat == 0) {
 -            spu_taskset_line_committed(ea & ~127u);
@@ -29152,7 +29460,7 @@ index 59f5e4b..9f14bd2 100644
          return 1;
  
      case MFC_PUTLLUC_CMD:
-@@ -778,7 +845,7 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+@@ -778,7 +850,7 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
          spu_lockline_lock();
          { extern void spu_lockguard_check(spu_context*, uint32_t, const uint8_t*, uint32_t, const char*);
            spu_lockguard_check(ctx, ea, ls, MFC_ATOMIC_LINE, "PUTLLUC"); }
@@ -29161,8 +29469,11 @@ index 59f5e4b..9f14bd2 100644
          /* Unconditional, so it invalidates EVERY reservation on the line --
           * this SPU's included, which is why the notify runs before the
           * bookkeeping below rather than after it. A peer left holding a
-@@ -788,7 +855,7 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+@@ -786,9 +858,10 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
+          * has already overwritten. */
+         spu_coh_notify_write(ea);
          ctx->resv_valid = 0; ctx->atomic_stat = 2;   /* PUTLLUC complete */
++        spu_coh_live_end(ctx);
          spu_lockline_unlock();
          spu_taskset_line_committed(ea & ~127u);
 -        if (g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
@@ -29170,7 +29481,7 @@ index 59f5e4b..9f14bd2 100644
          return 1;
  
      default:
-@@ -842,7 +909,7 @@ void spu_wrch(spu_context* ctx, uint32_t channel, u128 value)
+@@ -842,7 +915,7 @@ void spu_wrch(spu_context* ctx, uint32_t channel, u128 value)
           * long-missing producer for event_status (previously only ever cleared
           * via WrEventAck -> RdEventStat waits could never complete). */
          if (channel == MFC_WrTagUpdate && v != 0 && (ctx->event_mask & 0x1u)) {
@@ -29179,7 +29490,7 @@ index 59f5e4b..9f14bd2 100644
              spu_ch_wake(ctx);
          }
          return;
-@@ -859,8 +926,10 @@ void spu_wrch(spu_context* ctx, uint32_t channel, u128 value)
+@@ -859,8 +932,10 @@ void spu_wrch(spu_context* ctx, uint32_t channel, u128 value)
           * by paths that do not wake a stalled writer. A raw SPU's local store
           * is the guest window, not its own buffer. */
          if (ctx->ls != ctx->ls_store)
@@ -29191,7 +29502,7 @@ index 59f5e4b..9f14bd2 100644
          spu_channel_write(&ctx->ch_out_mbox, v);
          /* SPU_DBG_MBOX=1: depth after the write. The image-1 SPUs publish their
           * LS work buffer here (LS 0x11D4) and then poll it, and the guest sets
-@@ -899,7 +968,17 @@ void spu_wrch(spu_context* ctx, uint32_t channel, u128 value)
+@@ -899,7 +974,17 @@ void spu_wrch(spu_context* ctx, uint32_t channel, u128 value)
           * it still holds a reservation it has already lost, which is the parked
           * SPURS kernel this whole mechanism exists to wake. */
          spu_lockline_lock();
@@ -29210,7 +29521,7 @@ index 59f5e4b..9f14bd2 100644
          spu_lockline_unlock();
          break;
      case SPU_WrSRR0:         ctx->srr0 = v;                                 break;
-@@ -960,7 +1039,7 @@ static void spu_resv_lost_poll(spu_context* ctx)
+@@ -960,7 +1045,7 @@ static void spu_resv_lost_poll(spu_context* ctx)
      if (!vm_base || ctx->resv_ea == 0) return;
      if (memcmp(vm_base + ctx->resv_ea, ctx->resv_line, 128) != 0) {
          ctx->resv_valid = 0;
@@ -29219,7 +29530,7 @@ index 59f5e4b..9f14bd2 100644
      }
  }
  
-@@ -1010,10 +1089,16 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
+@@ -1010,10 +1095,16 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
      if (!yz_ch_block() || spu_ch_ready(ctx, channel)) return;
      const uint64_t ft_t0 = PS3_FT_ON() ? ps3_ft_now() : 0;
  
@@ -29239,7 +29550,7 @@ index 59f5e4b..9f14bd2 100644
                  ctx->event_status, ctx->event_mask); }
  
      ctx->status = SPU_STATUS_WAITING_CHANNEL;
-@@ -1021,6 +1106,10 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
+@@ -1021,6 +1112,10 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
      {
          unsigned long long start = GetTickCount64(), next_hb = 2000;
          while (!spu_ch_ready(ctx, channel)) {
@@ -29250,7 +29561,7 @@ index 59f5e4b..9f14bd2 100644
              AcquireSRWLockExclusive((SRWLOCK*)&ctx->ch_wait_lock);
              if (!spu_ch_ready(ctx, channel))
                  SleepConditionVariableSRW((CONDITION_VARIABLE*)&ctx->ch_wait_cv,
-@@ -1047,6 +1136,7 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
+@@ -1047,6 +1142,7 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
   * ===========================================================================*/
  u128 spu_rdch(spu_context* ctx, uint32_t channel)
  {
@@ -29258,7 +29569,7 @@ index 59f5e4b..9f14bd2 100644
      { static int s_c = -1; if (s_c < 0) { const char* e = getenv("SPU_CHHIST"); s_c = e ? (atoi(e) > 0 ? atoi(e) : 2000) : 0; }
        if (s_c) { static unsigned long long r[128]; static unsigned long long n;
            r[channel & 127]++;
-@@ -1139,6 +1229,7 @@ u128 spu_rdch(spu_context* ctx, uint32_t channel)
+@@ -1139,6 +1235,7 @@ u128 spu_rdch(spu_context* ctx, uint32_t channel)
   * ===========================================================================*/
  uint32_t spu_rchcnt(spu_context* ctx, uint32_t channel)
  {
@@ -29266,7 +29577,7 @@ index 59f5e4b..9f14bd2 100644
      /* SPU_WHOPOLLS=<n>: rchcnt/park accounting PER SPU, printed every n calls
       * with the pc each SPU is sitting at.
       *
-@@ -1395,8 +1486,31 @@ static inline uint32_t spu_fn_hash(uint32_t addr)
+@@ -1395,8 +1492,31 @@ static inline uint32_t spu_fn_hash(uint32_t addr)
  static int s_reg_image = 0;
  void spu_begin_image(int image_id) { s_reg_image = image_id; }
  
@@ -29298,7 +29609,7 @@ index 59f5e4b..9f14bd2 100644
      if (s_registry_count >= SPU_FN_REGISTRY_MAX) {
          /* Silent truncation here dropped whole late-registered SPU images and
           * cost a multi-round hunt (the branch-to-0 looked like a lifter/overlay
-@@ -1468,6 +1582,14 @@ static void spu_report_cross_image(uint32_t addr, int want, int got)
+@@ -1468,6 +1588,14 @@ static void spu_report_cross_image(uint32_t addr, int want, int got)
              "issue #59.\n", addr, want, got);
  }
  
@@ -29313,7 +29624,7 @@ index 59f5e4b..9f14bd2 100644
  spu_fn spu_lookup(uint32_t addr, int image_id)   /* exported: clang-built fast-path dispatch (spu_dispatch_mt.c) needs it */
  {
      /* Match the context's active image; image_id 0 (context or entry) matches
-@@ -1475,7 +1597,8 @@ spu_fn spu_lookup(uint32_t addr, int image_id)   /* exported: clang-built fast-p
+@@ -1475,7 +1603,8 @@ spu_fn spu_lookup(uint32_t addr, int image_id)   /* exported: clang-built fast-p
      for (uint32_t n = s_hash_head[spu_fn_hash(addr)]; n; n = s_hash_next[n - 1]) {
          const spu_reg_entry* e = &s_registry[n - 1];
          if (e->addr == addr &&
@@ -29323,7 +29634,7 @@ index 59f5e4b..9f14bd2 100644
              /* One compare on the return path; the report itself is rare. */
              if (e->image_id != image_id)
                  spu_report_cross_image(addr, image_id, e->image_id);
-@@ -1496,7 +1619,7 @@ int spu_image_of_function(uint32_t addr)
+@@ -1496,7 +1625,7 @@ int spu_image_of_function(uint32_t addr)
  {
      for (uint32_t n = s_hash_head[spu_fn_hash(addr)]; n; n = s_hash_next[n - 1]) {
          const spu_reg_entry* e = &s_registry[n - 1];
@@ -29332,7 +29643,7 @@ index 59f5e4b..9f14bd2 100644
      }
      return -1;
  }
-@@ -1512,9 +1635,102 @@ int spu_have_function(uint32_t addr)
+@@ -1512,9 +1641,102 @@ int spu_have_function(uint32_t addr)
   * (spu_interp.c, rejoin path). It IS the registry lookup, so overlay eviction and
   * self-modifying-code invalidation are honored automatically. Lived in
   * spu_fn_registry.c before the registry was consolidated into this TU. */
@@ -29436,7 +29747,7 @@ index 59f5e4b..9f14bd2 100644
  }
  
  /* ---- Swappable code overlays (see spu_context.resident_ovl) --------------
-@@ -1522,20 +1738,59 @@ spu_lifted_fn spu_lifted_lookup(const spu_context* ctx, uint32_t lsa)
+@@ -1522,20 +1744,59 @@ spu_lifted_fn spu_lifted_lookup(const spu_context* ctx, uint32_t lsa)
   * the image id its lifted functions were registered under. The MFC GET path
   * marks that overlay resident in the streaming context; dispatch retries a
   * primary-image miss against the resident overlay's registry. */
@@ -29499,7 +29810,7 @@ index 59f5e4b..9f14bd2 100644
      }
  }
  
-@@ -1548,16 +1803,37 @@ void spu_overlay_register_region(uint32_t content_ea, uint32_t span, int image_i
+@@ -1548,16 +1809,37 @@ void spu_overlay_register_region(uint32_t content_ea, uint32_t span, int image_i
      s_ovl_src[s_ovl_src_count - 1].span = span;
  }
  
@@ -29537,7 +29848,7 @@ index 59f5e4b..9f14bd2 100644
      }
  }
  
-@@ -1565,7 +1841,10 @@ void spu_register_stack_reset_entry(uint32_t entry, int image_id)
+@@ -1565,7 +1847,10 @@ void spu_register_stack_reset_entry(uint32_t entry, int image_id)
   * a stack-switching routine without going through spu_indirect_branch. */
  void spu_check_stack_reset(spu_context* ctx, void (*fn)(spu_context*))
  {
@@ -29549,7 +29860,7 @@ index 59f5e4b..9f14bd2 100644
      for (unsigned i = 0; i < s_stack_reset_count; ++i)
          if (ctx->pc == s_stack_reset[i].entry &&
              fn == spu_lookup(ctx->pc, s_stack_reset[i].image_id)) {
-@@ -1699,7 +1978,24 @@ void spu_overlay_note_get(spu_context* ctx, uint32_t ea, const uint8_t* ls, uint
+@@ -1699,7 +1984,24 @@ void spu_overlay_note_get(spu_context* ctx, uint32_t ea, const uint8_t* ls, uint
  {
      uint32_t lsa = (uint32_t)(ls - ctx->ls);
      spu_ovl_dump(ctx, ea, lsa, ls, size);
@@ -29575,7 +29886,7 @@ index 59f5e4b..9f14bd2 100644
          if (!ctx->resident_code[slot].image_id) continue;
          uint32_t base = ctx->resident_code[slot].lsa;
          uint32_t end = base + ctx->resident_code[slot].size;
-@@ -1707,25 +2003,110 @@ void spu_overlay_note_get(spu_context* ctx, uint32_t ea, const uint8_t* ls, uint
+@@ -1707,25 +2009,110 @@ void spu_overlay_note_get(spu_context* ctx, uint32_t ea, const uint8_t* ls, uint
              (lsa < base || ea != ctx->resident_code[slot].source_ea + (lsa - base)))
              ctx->resident_code[slot].image_id = 0;
      }
@@ -29696,7 +30007,7 @@ index 59f5e4b..9f14bd2 100644
              if (ctx->resident_ovl != o->image_id) {
                  ctx->resident_ovl = o->image_id;
                  { static int _n = 0; if (PS3_LOG_FIRST(_n, 32))
-@@ -1792,6 +2173,33 @@ static void spu_ef_deliver_owed(spu_context* ctx, uint32_t wobj)
+@@ -1792,6 +2179,33 @@ static void spu_ef_deliver_owed(spu_context* ctx, uint32_t wobj)
                  (unsigned)bits, wobj); }
  }
  
@@ -29730,7 +30041,7 @@ index 59f5e4b..9f14bd2 100644
  void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by the pure interpreter (spu_interp.c) */
  {
      uint32_t raw = ctx->gpr[3]._u32[0];
-@@ -1866,6 +2274,22 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
+@@ -1866,6 +2280,22 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
                           ((uint32_t)ctx->ls[0x2FDD] << 16) |
                           ((uint32_t)ctx->ls[0x2FDE] << 8)  |
                            (uint32_t)ctx->ls[0x2FDF]) & ~0xFu;
@@ -29753,7 +30064,7 @@ index 59f5e4b..9f14bd2 100644
          /* SPURS_EF_SPU_REPLY=1 -- DIAGNOSTIC BISECT, NOT A FIX.
           *
           * The guest task is supposed to set its SPU->PPU flag (object+0x100)
-@@ -1917,6 +2341,20 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
+@@ -1917,6 +2347,20 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
              }
              yz_lockstep_block_begin(ctx);
              spu_taskset_parked_add(ts, tid, wobj);
@@ -29774,7 +30085,7 @@ index 59f5e4b..9f14bd2 100644
              spu_taskset_wait_signal(ts, tid);
              spu_taskset_parked_del(ts, tid);
              yz_lockstep_block_end(ctx);
-@@ -1941,6 +2379,14 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
+@@ -1941,6 +2385,14 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
   * the small instruction set such stubs use, and exit back into lifted code at
   * the first branch (trampoline re-dispatch). Returns 1 if it executed to a
   * branch, 0 on an unknown opcode (caller falls through to BRANCH-TO-0). */
@@ -29789,7 +30100,7 @@ index 59f5e4b..9f14bd2 100644
  static int spu_smc_microstep(spu_context* ctx)
  {
      uint32_t pc = ctx->pc & SPU_LS_MASK & ~3u;
-@@ -2092,9 +2538,9 @@ static int spu_smc_microstep(spu_context* ctx)
+@@ -2092,9 +2544,9 @@ static int spu_smc_microstep(spu_context* ctx)
                        " microstep set -- handing to the interpreter (steps=%d)\n",
                        ctx->image_id, pc, w, steps); }
          ctx->pc = pc;
@@ -29802,7 +30113,7 @@ index 59f5e4b..9f14bd2 100644
          const uint32_t return_pc = ctx->drain_ret_pc;
          uint32_t result = spu_interp_run_until(ctx, pc, return_pc);
          /* A live interpreter rejoin is a transfer, not a host return. Nested
-@@ -2116,6 +2562,10 @@ static int spu_smc_microstep(spu_context* ctx)
+@@ -2116,6 +2568,10 @@ static int spu_smc_microstep(spu_context* ctx)
      return 0;
  }
  
@@ -29813,7 +30124,7 @@ index 59f5e4b..9f14bd2 100644
  void spu_indirect_branch(spu_context* ctx)
  {
      /* Real SPU bi/bisl mask the target to the 256 KB local store; the high bits
-@@ -2157,10 +2607,36 @@ void spu_indirect_branch(spu_context* ctx)
+@@ -2157,10 +2613,36 @@ void spu_indirect_branch(spu_context* ctx)
              /* cellSpursModulePoll: report "no contention — keep running".
               * (The host scheduler admits bounded workers; this service does not preempt.) */
              unsigned n = ++g_spurs_pm_polls;
@@ -29852,7 +30163,7 @@ index 59f5e4b..9f14bd2 100644
              ctx->pc = ctx->gpr[0]._u32[0] & SPU_LS_MASK;
              return;
          }
-@@ -2278,11 +2754,15 @@ void spu_indirect_branch(spu_context* ctx)
+@@ -2278,11 +2760,15 @@ void spu_indirect_branch(spu_context* ctx)
       * is 0 outside the region, so this only ever fires for genuine task code.) */
      spu_fn fn = NULL;
      int code_owner = 0;
@@ -29870,7 +30181,7 @@ index 59f5e4b..9f14bd2 100644
              break;
          }
      }
-@@ -2292,7 +2772,17 @@ void spu_indirect_branch(spu_context* ctx)
+@@ -2292,7 +2778,17 @@ void spu_indirect_branch(spu_context* ctx)
       * is the truth there -- the base image's stale bytes at the same addresses
       * may also be registered (historical junk lifts) and must lose. */
      if (!code_owner && !fn && ctx->resident_ovl) fn = spu_lookup(ctx->pc, ctx->resident_ovl);
@@ -29889,7 +30200,7 @@ index 59f5e4b..9f14bd2 100644
      /* The job returned through the link register we planted: it is finished.
       * Its outermost frame ends in `bi $r0`, and r0 was 0 -- so without this the
       * return landed on LS 0, which is the job's OWN entry, and it ran a second
-@@ -2415,7 +2905,7 @@ void spu_indirect_branch(spu_context* ctx)
+@@ -2415,7 +2911,7 @@ void spu_indirect_branch(spu_context* ctx)
              int img = spu_overlay_match_sig(&ctx->ls[codeBase]);
              if (img) {
                  if (ctx->resident_ovl != img) {
@@ -29899,7 +30210,7 @@ index 59f5e4b..9f14bd2 100644
                          fprintf(stderr, "[spu-ovl] WWS job module resident: codeBase=0x%05X "
                                  "pc=0x%05X -> overlay image %d\n", codeBase, ctx->pc & SPU_LS_MASK, img);
 diff --git a/runtime/spu/spu_coherency.c b/runtime/spu/spu_coherency.c
-index bc7017d..3d3ed13 100644
+index bc7017d..df0b24b 100644
 --- a/runtime/spu/spu_coherency.c
 +++ b/runtime/spu/spu_coherency.c
 @@ -52,9 +52,42 @@ void spu_lockline_lock(void)
@@ -29948,7 +30259,110 @@ index bc7017d..3d3ed13 100644
  #endif
  
  /* ===========================================================================
-@@ -207,7 +240,7 @@ void spu_coh_notify_write_except(uint32_t ea, const void* self)
+@@ -93,6 +126,81 @@ static spu_coh_entry* s_coh_ctxs;
+ 
+ unsigned long g_spu_lr_raise = 0;
+ 
++/* ===========================================================================
++ * Live holder counts (PS3RECOMP_SPU_LIVE_HOLDERS=1, default off; upstream #731)
++ *
++ * Marks are sticky, so once any SPU has reserved a line every later write to
++ * it -- PPU stores and store-conditionals, MFC puts, PUTLLC commits -- walks
++ * every registered context under the lock-line lock to raise lost-reservation
++ * events, although usually no SPU holds that line any more.
++ *
++ * On, each context counts itself in s_coh_live for the line of its GETLLAR,
++ * before the line is read, and stays counted until its reservation ends on its
++ * own thread (PUTLLC either way, PUTLLUC, a GETLLAR of another line,
++ * unregister). A reservation that another agent takes away stays counted until
++ * then, so a line's count is never below the number of contexts holding it. A
++ * notify that finds the count at zero does everything else as before (the PPU
++ * reservation break) and skips only the holder walk. Lines share counters (a
++ * hashed table), which only keeps the walk; so does a count left high by a
++ * context that was reset while counted.
++ *
++ * In this tree every GETLLAR and every notify runs under the lock-line lock,
++ * which already orders the count against the write. The seq_cst increment and
++ * the fences are kept from upstream so a notifier that ever ran without the
++ * lock would still either see the count or have its write seen by the copy.
++ * ===========================================================================*/
++#define SPU_COH_LIVE_SLOTS 65536u
++static uint32_t s_coh_live[SPU_COH_LIVE_SLOTS];
++static int s_coh_live_on = -1;
++unsigned long g_spu_coh_live_skips;
++
++int spu_coh_live_enabled(void)
++{
++    int on = __atomic_load_n(&s_coh_live_on, __ATOMIC_RELAXED);
++    if (__builtin_expect(on < 0, 0)) {
++        const char* e = getenv("PS3RECOMP_SPU_LIVE_HOLDERS");
++        on = e && e[0] == '1' && !e[1];
++        __atomic_store_n(&s_coh_live_on, on, __ATOMIC_RELAXED);
++        if (on) { fprintf(stderr, "[spu-coh] live reservation holder counts on\n"); fflush(stderr); }
++    }
++    return on;
++}
++
++static inline uint32_t* spu_coh_live_slot(uint32_t ea)
++{
++    return &s_coh_live[(ea >> SPU_COH_LINE_SHIFT) & (SPU_COH_LIVE_SLOTS - 1u)];
++}
++
++void spu_coh_live_end(spu_context* c)
++{
++    if (!c || !c->coh_live_counted) return;
++    c->coh_live_counted = 0;
++    __atomic_fetch_sub(spu_coh_live_slot(c->coh_live_line), 1u, __ATOMIC_RELEASE);
++}
++
++/* Owner thread, at a GETLLAR, before the line is read. */
++static void spu_coh_live_begin(spu_context* c, uint32_t ea)
++{
++    if (!c || spu_coh_live_enabled() <= 0) return;
++    const uint32_t line = ea & ~127u;
++    if (c->coh_live_counted && c->coh_live_line == line) return;
++    spu_coh_live_end(c);
++    __atomic_fetch_add(spu_coh_live_slot(line), 1u, __ATOMIC_SEQ_CST);
++    __atomic_thread_fence(__ATOMIC_SEQ_CST);
++    c->coh_live_line = line;
++    c->coh_live_counted = 1;
++}
++
++/* After the write: may this notify skip the holder walk? */
++static inline int spu_coh_live_idle(uint32_t line)
++{
++    if (spu_coh_live_enabled() <= 0) return 0;
++    __atomic_thread_fence(__ATOMIC_SEQ_CST);
++    if (__atomic_load_n(spu_coh_live_slot(line), __ATOMIC_SEQ_CST) != 0) return 0;
++    __atomic_fetch_add(&g_spu_coh_live_skips, 1ul, __ATOMIC_RELAXED);
++    return 1;
++}
++
+ void spu_coh_reserve(spu_context* ctx, uint32_t ea)
+ {
+     uint32_t line = ea >> SPU_COH_LINE_SHIFT;
+@@ -100,6 +208,7 @@ void spu_coh_reserve(spu_context* ctx, uint32_t ea)
+     s_coh_armed = 1;
+ 
+     if (!ctx) return;
++    spu_coh_live_begin(ctx, ea);   /* counted before the caller reads the line */
+     for (spu_coh_entry* entry = s_coh_ctxs; entry; entry = entry->next)
+         if (entry->ctx == ctx) return;
+     spu_coh_entry* entry = (spu_coh_entry*)malloc(sizeof(*entry));
+@@ -139,6 +248,7 @@ void spu_coh_unregister(spu_context* ctx)
+         free(entry);
+         break;
+     }
++    spu_coh_live_end(ctx);
+     spu_lockline_unlock();
+ }
+ 
+@@ -203,11 +313,12 @@ void spu_coh_notify_write_except(uint32_t ea, const void* self)
+ {
+     uint32_t line = ea & ~127u;
+     ppu_resv_break_line(ea);
++    if (spu_coh_live_idle(line)) return;   /* no SPU can hold this line now */
+     for (spu_coh_entry* entry = s_coh_ctxs; entry; entry = entry->next) {
          spu_context* c = entry->ctx;
          if (!c || (const void*)c == self) continue;
          if (c->resv_valid && (c->resv_ea & ~127u) == line) {
@@ -29957,7 +30371,12 @@ index bc7017d..3d3ed13 100644
              c->resv_valid = 0;
              g_spu_lr_raise++;
              spu_ch_wake(c);
-@@ -223,7 +256,7 @@ void spu_coh_notify_write(uint32_t ea)
+@@ -219,11 +330,12 @@ void spu_coh_notify_write(uint32_t ea)
+ {
+     uint32_t line = ea & ~127u;
+     ppu_resv_break_line(ea);
++    if (spu_coh_live_idle(line)) return;   /* no SPU can hold this line now */
+     for (spu_coh_entry* entry = s_coh_ctxs; entry; entry = entry->next) {
          spu_context* c = entry->ctx;
          if (!c) continue;
          if (c->resv_valid && (c->resv_ea & ~127u) == line) {
@@ -29966,8 +30385,38 @@ index bc7017d..3d3ed13 100644
              c->resv_valid = 0;          /* reservation lost, PUTLLC must fail */
              /* SPU_PUTLLC_WHY=1: name the agent that killed it. A PUTLLC that
               * always fails for "no reservation" is useless without knowing who
+diff --git a/runtime/spu/spu_coherency.h b/runtime/spu/spu_coherency.h
+index ca76ccd..f073f65 100644
+--- a/runtime/spu/spu_coherency.h
++++ b/runtime/spu/spu_coherency.h
+@@ -55,6 +55,16 @@ void spu_coh_reserve(spu_context* ctx, uint32_t ea);
+  * lookup guarded by a global that is zero until the first GETLLAR. */
+ int spu_coh_is_reserved(uint32_t addr);
+ 
++/* PS3RECOMP_SPU_LIVE_HOLDERS=1 (default off; upstream #731): count, per line,
++ * the contexts that may hold a reservation on it, so a write to a line no SPU
++ * holds now skips the walk over every registered context. spu_coh_reserve
++ * counts the caller; the caller ends the count with spu_coh_live_end on its own
++ * thread once its reservation is consumed (PUTLLC either way, PUTLLUC). Off,
++ * these are no-ops. */
++int  spu_coh_live_enabled(void);
++void spu_coh_live_end(spu_context* ctx);
++extern unsigned long g_spu_coh_live_skips;   /* notifies that skipped the walk */
++
+ /* A store by the PPU landed on `ea`'s line. Raise SPU_EVENT_LR on every SPU
+  * whose live reservation covers it, drop that reservation, and wake the host
+  * thread in case it is parked in `rdch SPU_RdEventStat`.
+@@ -65,7 +75,7 @@ void spu_coh_notify_write(uint32_t ea);
+ /* Remove a context from the reserving set. MUST be called before a
+  * transient (stack-allocated) spu_context goes out of scope. */
+ void spu_coh_unregister(spu_context* ctx);
+-void spu_coh_forget_range(uintptr_t lo, uintptr_t hi);  /* thread exit */
++void spu_coh_forget_range(uintptr_t lo, uintptr_t hi);  /* thread exit */
+ /* As above, but leaves `self`'s own reservation alone: an SPU's own MFC
+  * write does not cost it its reservation on hardware. */
+ void spu_coh_notify_write_except(uint32_t ea, const void* self);
 diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
-index f46d415..568faca 100644
+index f46d415..e835311 100644
 --- a/runtime/spu/spu_context.h
 +++ b/runtime/spu/spu_context.h
 @@ -39,17 +39,17 @@ extern "C" {
@@ -30045,7 +30494,7 @@ index f46d415..568faca 100644
  
      /* Resident SPURS-taskset TASK image id (0 = none) retires the id-0 wildcard
       * for co-resident tasks. A taskset may hold several tasks that all lift at the
-@@ -376,24 +403,61 @@ typedef struct spu_context {
+@@ -376,24 +403,67 @@ typedef struct spu_context {
      uint64_t list_stall_ea_base[32];      /* ea base (hi32 carries), per tag */
      uint32_t list_stall_cmd[32];          /* base (non-list) MFC command, per tag */
  
@@ -30102,6 +30551,12 @@ index f46d415..568faca 100644
 +     * lv2 SPU thread. An event the lane sends names this id, so the PPU's
 +     * reply (sys_spu_thread_write_spu_mb) can find the lane again. */
 +    uint32_t vspu_tid;
++
++    /* PS3RECOMP_SPU_LIVE_HOLDERS (spu_coherency.c): the line this context is
++     * counted on in the live-holder table, from its GETLLAR until its
++     * reservation ends on this thread. Owner thread only. */
++    uint32_t coh_live_line;
++    int coh_live_counted;
  } spu_context;
  
 +/* event_status is written from more than one host thread: the SPU's own
@@ -30123,7 +30578,7 @@ index f46d415..568faca 100644
  /* Reserved LS addresses (inside the kernel area, below the 0xA00 policy-module
   * base) that the HLE kernel plants as exitToKernelAddr / selectWorkloadAddr in
   * the SpursKernelContext. A policy module branching to them is performing a
-@@ -481,27 +545,34 @@ static inline void spu_ls_write32(spu_context* ctx, uint32_t lsa, uint32_t val)
+@@ -481,27 +551,34 @@ static inline void spu_ls_write32(spu_context* ctx, uint32_t lsa, uint32_t val)
  #define SPU_BSWAP32(x) __builtin_bswap32(x)
  #define SPU_LS_FAST 1
  #endif
@@ -30177,7 +30632,7 @@ index f46d415..568faca 100644
      /* SPU_LS_LOWREAD=1: a job that reads its OWN first bytes as data is
       * dereferencing a null base -- the job binary loads at LS 0, so [NULL+off]
       * returns its own instruction words. Report each distinct low address once,
-@@ -535,18 +606,20 @@ static __attribute__((noinline, cold)) void spu_ls_read_probe(const spu_context*
+@@ -535,18 +612,20 @@ static __attribute__((noinline, cold)) void spu_ls_read_probe(const spu_context*
                      off >> 6, (off >> 2) & 0xF, off);
          }
      }
@@ -30206,7 +30661,7 @@ index f46d415..568faca 100644
      uint32_t w0, w1, w2, w3;
      memcpy(&w0, p,      4); memcpy(&w1, p + 4,  4);
      memcpy(&w2, p + 8,  4); memcpy(&w3, p + 12, 4);
-@@ -563,7 +636,7 @@ static inline u128 spu_ls_read128(const spu_context* ctx, uint32_t lsa)
+@@ -563,7 +642,7 @@ static inline u128 spu_ls_read128(const spu_context* ctx, uint32_t lsa)
      return v;
  }
  
@@ -30215,7 +30670,7 @@ index f46d415..568faca 100644
  {
      if (lsa == 0x1320 && ctx->image_id == 2 && ctx->policy_mode) {
          extern int g_wws_code_probe;   /* defined in spu_channels.c, capped */
-@@ -591,12 +664,12 @@ static __attribute__((noinline, cold)) void spu_ls_write_probe_pre(spu_context*
+@@ -591,12 +670,12 @@ static __attribute__((noinline, cold)) void spu_ls_write_probe_pre(spu_context*
              #undef _RD32
          }
      }
@@ -30234,7 +30689,7 @@ index f46d415..568faca 100644
      /* SPU_SMC_WATCH=<img>: self-modification detector. Log any store whose
       * target LS line falls inside that image's CODE segment (the segment
       * bounds come from SPU_SMC_LO/HI, default the pm_wwsjob range 0xA00..
-@@ -616,38 +689,40 @@ static __attribute__((noinline, cold)) void spu_ls_write_probe_smc(spu_context*
+@@ -616,38 +695,40 @@ static __attribute__((noinline, cold)) void spu_ls_write_probe_smc(spu_context*
        } }
  }
  
@@ -30307,7 +30762,7 @@ index f46d415..568faca 100644
  /* ---------------------------------------------------------------------------
   * Preferred slot extraction
   *
-@@ -802,6 +877,11 @@ int  spu_tailret_enabled(void);
+@@ -802,6 +883,11 @@ int  spu_tailret_enabled(void);
   * unchanged (interrupt not taken) if LS 0 holds no branch instruction. */
  void (*spu_take_interrupt(spu_context* ctx,
                            void (*tf)(spu_context*)))(spu_context*);
@@ -30319,7 +30774,7 @@ index f46d415..568faca 100644
  
  /* Drain a translated call up to its explicit architectural return PC. */
  void spu_drain_call(spu_context* ctx, uint32_t return_pc);
-@@ -877,6 +957,8 @@ static inline void spu_pchist_tick(const spu_context* ctx)
+@@ -877,6 +963,8 @@ static inline void spu_pchist_tick(const spu_context* ctx)
              if ((ctx)->int_enable &&                            \
                  ((ctx)->event_status & (ctx)->event_mask))      \
                  _tf = spu_take_interrupt((ctx), _tf);          \
@@ -30328,7 +30783,7 @@ index f46d415..568faca 100644
              spu_pchist_tick(ctx);                              \
              g_spu_pch[g_spu_pch_n++ & 7u] =                    \
                  (uint32_t)((ctx)->pc & SPU_LS_MASK);           \
-@@ -884,6 +966,93 @@ static inline void spu_pchist_tick(const spu_context* ctx)
+@@ -884,6 +972,93 @@ static inline void spu_pchist_tick(const spu_context* ctx)
          }                                                      \
      } while (0)
  
@@ -31076,10 +31531,46 @@ index fc3cea1..5d7036c 100644
                  { static int _n = 0; if (PS3_LOG_FIRST(_n, 8))
                      fprintf(stderr, "[spu] drain-resume return_pc=0x%05X at lifted entry 0x%05X img=%d depth=%d ovl=%d\n",
 diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
-index 3f7d733..4d340f0 100644
+index 3f7d733..08c73e3 100644
 --- a/runtime/spu/spu_helpers.h
 +++ b/runtime/spu/spu_helpers.h
-@@ -788,9 +788,7 @@ SPU__NV_INLINE u128 spu__nv_fa(u128 a, u128 b, uint32_t negb) {
+@@ -386,20 +386,23 @@ static inline u128 spu_shufb(u128 a, u128 b, u128 c) {
+ #elif defined(__ARM_NEON)
+ #include <arm_neon.h>
+ /* NEON version: tbl over the 32-byte {a,b} concatenation. SPU byte P lives at
+- * host byte P^3 (each word's bytes reversed), so rev32 into SPU order,
+- * select, and rev32 back. */
++ * host byte P^3 (each word's bytes reversed). No byte swaps are needed (the
++ * idea of upstream #716, which did it for SSE4.1): the control byte for result
++ * SPU byte t sits at host byte t^3, which is where that result byte goes, so C
++ * is used as it is; source SPU byte s of the concatenation is host byte s^3 of
++ * {a,b} (the xor leaves bit 4, the A/B choice, alone), so the tbl index is
++ * (sel & 0x1F) ^ 3. The special selectors (C bit 7 set) come from one lookup
++ * on the top nibble. 7 vector operations against 13 for swap/select/swap. */
+ static inline u128 spu_shufb(u128 a, u128 b, u128 c) {
+     uint8x16x2_t t;
+-    t.val[0] = vrev32q_u8(vld1q_u8(a._u8));
+-    t.val[1] = vrev32q_u8(vld1q_u8(b._u8));
+-    const uint8x16_t C = vrev32q_u8(vld1q_u8(c._u8));
+-    uint8x16_t r = vqtbl2q_u8(t, vandq_u8(C, vdupq_n_u8(0x1F)));
+-    /* Special selectors: 10x -> 0x00, 110 -> 0xFF, 111 -> 0x80. */
+-    const uint8x16_t m80 = vtstq_u8(C, vdupq_n_u8(0x80));
+-    const uint8x16_t mC0 = vceqq_u8(vandq_u8(C, vdupq_n_u8(0xC0)), vdupq_n_u8(0xC0));
+-    const uint8x16_t mE0 = vceqq_u8(vandq_u8(C, vdupq_n_u8(0xE0)), vdupq_n_u8(0xE0));
+-    const uint8x16_t special = vbslq_u8(mE0, vdupq_n_u8(0x80), mC0);
+-    r = vrev32q_u8(vbslq_u8(m80, special, r));
++    t.val[0] = vld1q_u8(a._u8);
++    t.val[1] = vld1q_u8(b._u8);
++    const uint8x16_t C = vld1q_u8(c._u8);
++    uint8x16_t r = vqtbl2q_u8(t, veorq_u8(vandq_u8(C, vdupq_n_u8(0x1F)), vdupq_n_u8(3)));
++    /* Special selectors by the top three bits: 10x -> 0x00, 110 -> 0xFF, 111 -> 0x80. */
++    static const uint8_t tabv[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0x80, 0x80 };
++    const uint8x16_t special = vqtbl1q_u8(vld1q_u8(tabv), vshrq_n_u8(C, 4));
++    r = vbslq_u8(vcltzq_s8(vreinterpretq_s8_u8(C)), special, r);
+     u128 out; vst1q_u8(out._u8, r); return out;
+ }
+ #endif
+@@ -788,9 +791,7 @@ SPU__NV_INLINE u128 spu__nv_fa(u128 a, u128 b, uint32_t negb) {
      if (!spu__nv_all4(ok)) r = spu__fa_fix(r, ok, xa, yb, negb);
      return spu__nv_u128(r);
  }
@@ -31090,7 +31581,7 @@ index 3f7d733..4d340f0 100644
      const uint32x4_t x = vld1q_u32(a._u32), y = vld1q_u32(b._u32);
      uint32x2_t oklo, okhi, zlo, zhi;
      const float32x2_t lo = spu__nv_trunc0(vmulq_f64(spu__nv_lo(x), spu__nv_lo(y)), &oklo, &zlo, NULL);
-@@ -825,9 +823,154 @@ SPU__NV_INLINE u128 spu__nv_fma(u128 a, u128 b, u128 c, uint32_t negp, uint32_t
+@@ -825,9 +826,154 @@ SPU__NV_INLINE u128 spu__nv_fma(u128 a, u128 b, u128 c, uint32_t negp, uint32_t
      if (!spu__nv_all4(ok)) r = spu__fma_fix(r, ok, xa, y, zc, negp, negc);
      return spu__nv_u128(r);
  }
@@ -31245,7 +31736,7 @@ index 3f7d733..4d340f0 100644
  #elif defined(__AVX2__) && !defined(SPU_SCALAR_HELPERS)
  /* The NEON fast path above, on x86 with AVX2: the four lanes widened to one f64x4 (exact),
   * the operation, the 29 low significand bits cleared, narrowed (exact). Same lane rules: an
-@@ -933,6 +1076,11 @@ static inline u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__fma_s(a, b, c)
+@@ -933,6 +1079,11 @@ static inline u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__fma_s(a, b, c)
  static inline u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__fms_s(a, b, c); }
  static inline u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__fnms_s(a, b, c); }
  #endif
@@ -31257,7 +31748,7 @@ index 3f7d733..4d340f0 100644
  /* The exact path alone, for tests that check the fast path against it. */
  SPU__SF_V2(spu_fa_ref, spu__fa_lane(x, y))
  SPU__SF_V2(spu_fs_ref, spu__fa_lane(x, y ^ 0x80000000u))
-@@ -999,8 +1147,42 @@ static inline uint32_t spu__cfl_lane(uint32_t x, int scale, int is_unsigned) {
+@@ -999,8 +1150,42 @@ static inline uint32_t spu__cfl_lane(uint32_t x, int scale, int is_unsigned) {
      const uint32_t v = sh >= 0 ? m << sh : (sh <= -24 ? 0 : m >> -sh);
      return neg ? 0u - v : v;
  }
@@ -31302,7 +31793,7 @@ index 3f7d733..4d340f0 100644
  static inline u128 spu_csflt(u128 a, int i8) { u128 r; for (int i = 0; i < 4; i++) { const int32_t v = a._s32[i];
      r._u32[i] = v ? spu__sf_pack(v < 0 ? 0x80000000u : 0, v < 0 ? 0u - (uint32_t)v : (uint32_t)v, -(155 - (i8 & 0xFF))) : 0; } return r; }
  static inline u128 spu_cuflt(u128 a, int i8) { u128 r; for (int i = 0; i < 4; i++) { const uint32_t v = a._u32[i];
-@@ -1058,16 +1240,20 @@ static inline uint64_t spu__d_out(double d) {
+@@ -1058,16 +1243,20 @@ static inline uint64_t spu__d_out(double d) {
      uint64_t u; memcpy(&u, &d, 8);
      return spu__d_isnan(u) ? 0x7FF8000000000000ull : u;
  }
@@ -31325,7 +31816,7 @@ index 3f7d733..4d340f0 100644
      for (int i = 0; i < 2; i++) {
          const uint64_t x = spu__dw_get(a, i), y = spu__dw_get(b, i), z = spu__dw_get(c, i);
          if (spu__d_isnan(x) || spu__d_isnan(y) || spu__d_isnan(z)) { spu__dw_put(&r, i, 0x7FF8000000000000ull); continue; }
-@@ -1079,6 +1265,7 @@ static inline u128 spu__dfmx(u128 a, u128 b, u128 c, int negate, int subtract) {
+@@ -1079,6 +1268,7 @@ static inline u128 spu__dfmx(u128 a, u128 b, u128 c, int negate, int subtract) {
          const uint64_t u = spu__d_out(v);
          spu__dw_put(&r, i, (negate && !spu__d_isnan(u)) ? u ^ 0x8000000000000000ull : u);
      }
@@ -31333,7 +31824,7 @@ index 3f7d733..4d340f0 100644
      return r; }
  static inline u128 spu_dfma(u128 a, u128 b, u128 t)  { return spu__dfmx(a, b, t, 0, 0); }
  static inline u128 spu_dfms(u128 a, u128 b, u128 t)  { return spu__dfmx(a, b, t, 0, 1); }
-@@ -1100,6 +1287,7 @@ static inline u128 spu_fesd(u128 a) { u128 r;
+@@ -1100,6 +1290,7 @@ static inline u128 spu_fesd(u128 a) { u128 r;
      }
      return r; }
  static inline u128 spu_frds(u128 a) { u128 r;
@@ -31341,7 +31832,7 @@ index 3f7d733..4d340f0 100644
      for (int i = 0; i < 2; i++) {
          const uint64_t u = spu__dw_get(a, i);
          if (spu__d_isnan(u)) { r._u32[2*i] = 0x7FC00000u; r._u32[2*i+1] = 0; continue; }
-@@ -1107,6 +1295,7 @@ static inline u128 spu_frds(u128 a) { u128 r;
+@@ -1107,6 +1298,7 @@ static inline u128 spu_frds(u128 a) { u128 r;
          uint32_t w; memcpy(&w, &f, 4);
          r._u32[2*i] = w; r._u32[2*i+1] = 0;
      }
@@ -34033,8 +34524,102 @@ index 45235ea..e1311a2 100644
      m->owner_tid = ctx->thread_id;
      m->lock_count = depth;
      return result;
+diff --git a/runtime/syscalls/sys_event.c b/runtime/syscalls/sys_event.c
+index e8baa92..c817a5b 100644
+--- a/runtime/syscalls/sys_event.c
++++ b/runtime/syscalls/sys_event.c
+@@ -9,7 +9,7 @@
+ #include "../spu/spu_workload.h"   /* spu_elf_image_size, spu_workload_dispatch_async */
+ #include <string.h>
+ #include <stdlib.h>               /* getenv */
+-#include "ps3emu/log_first.h"
++#include "ps3emu/log_first.h"
+ 
+ /* Recorded by sys_spu_thread_initialize (lv2_register.c): the SPURS kernel
+  * context EA the title's SPU task runtime is dispatched against. */
+@@ -117,7 +117,6 @@ uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size)
+ 
+     sys_event_queue_info* q = &g_sys_event_queues[slot];
+     memset(q, 0, sizeof(*q));
+-    q->active   = 1;
+     q->key      = key;
+     q->capacity = size;
+     q->type     = SYS_PPU_QUEUE;
+@@ -134,6 +133,9 @@ uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size)
+     pthread_mutex_init(&q->lock, NULL);
+     pthread_cond_init(&q->not_empty, NULL);
+ #endif
++    /* Publish last (upstream #759): a host producer that sees active also sees
++     * an initialised lock. */
++    __atomic_store_n(&q->active, 1, __ATOMIC_RELEASE);
+ 
+     evt_table_unlock();
+ 
+@@ -165,7 +167,6 @@ int64_t sys_event_queue_create(ppu_context* ctx)
+ 
+     sys_event_queue_info* q = &g_sys_event_queues[slot];
+     memset(q, 0, sizeof(*q));
+-    q->active   = 1;
+     q->key      = key;
+     q->capacity = size;
+     q->head     = 0;
+@@ -203,6 +204,9 @@ int64_t sys_event_queue_create(ppu_context* ctx)
+     pthread_mutex_init(&q->lock, NULL);
+     pthread_cond_init(&q->not_empty, NULL);
+ #endif
++    /* Publish last (upstream #759): a host producer that sees active also sees
++     * an initialised lock. */
++    __atomic_store_n(&q->active, 1, __ATOMIC_RELEASE);
+ 
+     uint32_t queue_id = (uint32_t)(slot + 1);
+     if (id_out_addr != 0) {
+@@ -934,13 +938,21 @@ int sys_event_queue_push_by_id(uint32_t queue_id,
+ {
+     if (queue_id == 0 || queue_id > SYS_EVENT_QUEUE_MAX) return -1;
+     sys_event_queue_info* q = &g_sys_event_queues[queue_id - 1];
+-    if (!q->active) return -1;
+     sys_event_t evt;
+     evt.source = source;
+     evt.data1  = data1;
+     evt.data2  = data2;
+     evt.data3  = data3;
+-    return event_queue_push(q, &evt);
++    /* Host producers (cellAudio's period thread, SPURS, SPU groups) run
++     * concurrently with guest create and destroy. Hold the table lock across
++     * the check and the push so the queue cannot be created or destroyed under
++     * it (upstream #759). event_queue_push does not block: a full queue
++     * returns -1. */
++    evt_table_lock();
++    int rc = -1;
++    if (__atomic_load_n(&q->active, __ATOMIC_ACQUIRE)) rc = event_queue_push(q, &evt);
++    evt_table_unlock();
++    return rc;
+ }
+ 
+ /* Public helper: resolve an event queue by its ipc_key (as registered at
+@@ -949,11 +961,17 @@ int sys_event_queue_push_by_id(uint32_t queue_id,
+ uint32_t sys_event_find_queue_by_key(uint64_t key)
+ {
+     if (key == 0) return 0;
++    uint32_t id = 0;
++    evt_table_lock();
+     for (int i = 0; i < SYS_EVENT_QUEUE_MAX; i++) {
+-        if (g_sys_event_queues[i].active && g_sys_event_queues[i].key == key)
+-            return (uint32_t)(i + 1);
++        if (__atomic_load_n(&g_sys_event_queues[i].active, __ATOMIC_ACQUIRE) &&
++            g_sys_event_queues[i].key == key) {
++            id = (uint32_t)(i + 1);
++            break;
++        }
+     }
+-    return 0;
++    evt_table_unlock();
++    return id;
+ }
+ 
+ int64_t sys_event_port_send(ppu_context* ctx)
 diff --git a/runtime/syscalls/sys_fs.c b/runtime/syscalls/sys_fs.c
-index f076ef8..0485b47 100644
+index f076ef8..c15b68d 100644
 --- a/runtime/syscalls/sys_fs.c
 +++ b/runtime/syscalls/sys_fs.c
 @@ -5,6 +5,7 @@
@@ -34071,7 +34656,50 @@ index f076ef8..0485b47 100644
      { extern char* getenv(const char*); if (getenv("FLOW_TITLEOPEN") && ps3_path && strstr(ps3_path, "Titles")) {
          size_t _l = strlen(ps3_path);
          fprintf(stderr, "[TITLEOPEN] path='%s' (len=%zu, ends_slash=%d) guest_lr=0x%08X\n",
-@@ -723,6 +732,15 @@ int64_t sys_fs_stat(ppu_context* ctx)
+@@ -421,22 +430,31 @@ int64_t sys_fs_open(ppu_context* ctx)
+      * libxml2 probes /etc/xml/catalog there, and that file is absent by design.
+      * A share-lock/handle-pressure failure (the case this retry exists for)
+      * reports EACCES/EBUSY, not ENOENT, so the recovery still works. */
+-    if (!fp && errno != ENOENT &&
++    /* ...and only for an existing regular file (upstream #768): a directory, an
++     * invalid path (EINVAL) or a path through a non-directory (ENOTDIR: stat
++     * fails) is not transient either, and each such probe cost the caller the
++     * whole ~3 s loop before it got its CELL_EISDIR/ENOENT. */
++    const int open_errno = errno;
++    if (!fp && open_errno != ENOENT && open_errno != EINVAL &&
+         !(flags & (CELL_FS_O_CREAT | CELL_FS_O_WRONLY | CELL_FS_O_TRUNC))) {
+-        for (int _r = 0; !fp && _r < 3000; _r++) {
++        struct stat _st_retry;
++        if (stat(host_path, &_st_retry) == 0 && !S_ISDIR(_st_retry.st_mode)) {
++            for (int _r = 0; !fp && _r < 3000; _r++) {
+ #ifdef _WIN32
+-            Sleep(1);
++                Sleep(1);
+ #else
+-            /* The delay is the retry. 3000 iterations is meant to be about
+-             * three seconds of waiting for a transient share lock or handle
+-             * pressure to clear; without it the loop spends microseconds
+-             * calling fopen 3000 times on a condition that has not changed,
+-             * and the recovery this exists for never happens. */
+-            { struct timespec _d = { 0, 1000 * 1000 }; nanosleep(&_d, NULL); }
++                /* The delay is the retry. 3000 iterations is meant to be about
++                 * three seconds of waiting for a transient share lock or handle
++                 * pressure to clear; without it the loop spends microseconds
++                 * calling fopen 3000 times on a condition that has not changed,
++                 * and the recovery this exists for never happens. */
++                { struct timespec _d = { 0, 1000 * 1000 }; nanosleep(&_d, NULL); }
+ #endif
+-            fp = fopen(host_path, mode);
++                fp = fopen(host_path, mode);
++            }
++            if (fp) fprintf(stderr, "[sys_fs] open recovered after retry: %s\n", host_path);
+         }
+-        if (fp) fprintf(stderr, "[sys_fs] open recovered after retry: %s\n", host_path);
++        errno = open_errno;   /* the code below reports the original failure */
+     }
+ 
+     /* If CREAT flag set and file doesn't exist, try creating it */
+@@ -723,6 +741,15 @@ int64_t sys_fs_stat(ppu_context* ctx)
      char host_path[1024];
      sys_fs_translate_path(ps3_path, host_path, sizeof(host_path));
  

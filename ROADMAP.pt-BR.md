@@ -53,10 +53,15 @@ sendo trabalhado.
   FIFO do GCM seguia uma lista de comandos temporária que o jogo libera logo
   depois de o RSX voltar dela, lia os bytes liberados como estado NV4097,
   associava um render target lixo e o motor o gravava sem checar limites,
-  caindo no .bss do jogo. O leitor agora guarda o JUMP de volta do desvio
-  (`GCM_DETOUR_RETURN`), gravações fora da memória do RSX são recusadas
+  caindo no .bss do jogo. O leitor agora lê o JUMP do fim da lista
+  no instante em que `put` se move (`GCM_PUT_WATCH`, uma thread vigia),
+  gravações fora da memória do RSX são recusadas
   (`PS3RECOMP_ENG_STORE_BOUNDS`) e um alarme registra "FIFO desync suspect".
-  Um caso de desalinhamento ainda ocorre (contido).
+- Manchas pretas no chão de Haven: os decalques se iluminam a partir de
+  render targets de 16x16; com a tabela cheia eles eram descartados sem o
+  conteúdo e o decalque multiplicava por zero. Alvos pequenos agora são
+  salvos na memória antes de descartados, quando ela ainda é deles
+  (`PS3RECOMP_ENG_EVICT_STORE_SMALL`, padrão 4096 bytes).
 - Cunhas translúcidas verdes e escuras indo até o céu (fitas e billboards
   perto de efeitos e do Stalker): arrays de vértices do RSX com stride 0 eram
   lidos como arrays compactados (o sentido do OpenGL). No RSX, stride 0

@@ -52,9 +52,15 @@ worked on.
   one-off command list the game frees right after the RSX returns from it,
   decoded the freed bytes as NV4097 state, bound a garbage render target and
   the engine stored it with no bounds check, wrapping into the game's .bss.
-  The walker now remembers the detour's JUMP back (`GCM_DETOUR_RETURN`), a
-  store outside RSX memory is refused (`PS3RECOMP_ENG_STORE_BOUNDS`) and a
-  tripwire logs "FIFO desync suspect". One desync case still fires (contained).
+  A watcher thread now snapshots the word at the walker's resting point the
+  moment `put` moves (`GCM_PUT_WATCH`), so a reclaimed link is still
+  followed; a store outside RSX memory is refused
+  (`PS3RECOMP_ENG_STORE_BOUNDS`) and a tripwire logs "FIFO desync suspect".
+- Black patches on the ground in Haven: decals light themselves from 16x16
+  render targets; when the target table filled, those were evicted without
+  their content and the decals multiplied by zero. Small targets are now
+  stored to guest memory before eviction when that memory is still theirs
+  (`PS3RECOMP_ENG_EVICT_STORE_SMALL`, default 4096 bytes).
 - Green and dark translucent wedges reaching into the sky (ribbons and
   billboards near effects and the Stalker): RSX vertex arrays with stride 0
   were fetched as tightly packed arrays (OpenGL's meaning). On the RSX stride

@@ -47,9 +47,14 @@ worked on.
   colour). Fixed in the engine (a retired slot is never returned as live, a
   guest copy newer than both targets is the blit source, the engine's own
   stores no longer retire, the depth copy covers the whole target).
-- Known: an intermittent hang in gameplay (main thread calls a virtual
-  method of an object whose table is zero, while sound banks stream in),
-  present since before these changes; being investigated.
+- Intermittent gameplay hang (main thread calling a virtual method through a
+  zeroed table ~50 s after a level starts): the GCM FIFO walker followed a
+  one-off command list the game frees right after the RSX returns from it,
+  decoded the freed bytes as NV4097 state, bound a garbage render target and
+  the engine stored it with no bounds check, wrapping into the game's .bss.
+  The walker now remembers the detour's JUMP back (`GCM_DETOUR_RETURN`), a
+  store outside RSX memory is refused (`PS3RECOMP_ENG_STORE_BOUNDS`) and a
+  tripwire logs "FIFO desync suspect". One desync case still fires (contained).
 - Green and dark translucent wedges reaching into the sky (ribbons and
   billboards near effects and the Stalker): RSX vertex arrays with stride 0
   were fetched as tightly packed arrays (OpenGL's meaning). On the RSX stride

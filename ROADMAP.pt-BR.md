@@ -48,9 +48,15 @@ sendo trabalhado.
   depth buffer de meia resolução; o motor aposentava esse alvo à toa,
   reaproveitava a vaga morta como viva e restaurava a partir do depth
   (profundidade pintada como cor). Corrigido no motor.
-- Conhecido: uma trava intermitente na gameplay (a thread principal chama um
-  método virtual de um objeto com a tabela zerada, enquanto bancos de som são
-  carregados), presente desde antes destas mudanças; em investigação.
+- Trava intermitente na gameplay (a thread principal chamando um método
+  virtual por uma tabela zerada ~50 s depois do início da fase): o leitor da
+  FIFO do GCM seguia uma lista de comandos temporária que o jogo libera logo
+  depois de o RSX voltar dela, lia os bytes liberados como estado NV4097,
+  associava um render target lixo e o motor o gravava sem checar limites,
+  caindo no .bss do jogo. O leitor agora guarda o JUMP de volta do desvio
+  (`GCM_DETOUR_RETURN`), gravações fora da memória do RSX são recusadas
+  (`PS3RECOMP_ENG_STORE_BOUNDS`) e um alarme registra "FIFO desync suspect".
+  Um caso de desalinhamento ainda ocorre (contido).
 - Cunhas translúcidas verdes e escuras indo até o céu (fitas e billboards
   perto de efeitos e do Stalker): arrays de vértices do RSX com stride 0 eram
   lidos como arrays compactados (o sentido do OpenGL). No RSX, stride 0

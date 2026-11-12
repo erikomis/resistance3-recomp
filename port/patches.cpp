@@ -136,20 +136,47 @@ static void peek_thread(std::string spec, unsigned ms)
     const char* from = getenv("RES_PEEK_FROM");
     const int max_prints = mx ? atoi(mx) : 60;
     if (from) std::this_thread::sleep_for(std::chrono::seconds(atoi(from)));
-    struct Range { uint32_t addr, len; std::vector<uint8_t> last; };
+    /* An entry is <hex addr>:<bytes>, or a pointer chain
+     * *<hex addr>[+<hex off>...]:<bytes> -- each '+' first loads the u32 at
+     * the address so far, then adds the offset (resolved again every
+     * print): *11FD31C+10+200:96 is *(*(0x11FD31C)+0x10)+0x200. */
+    struct Range { uint32_t addr, len; std::vector<uint8_t> last; std::vector<uint32_t> chain; };
     std::vector<Range> ranges;
     for (size_t at = 0; at < spec.size();) {
         size_t end = spec.find(',', at);
         std::string one = spec.substr(at, end == std::string::npos ? std::string::npos : end - at);
         unsigned a = 0, n = 0;
-        if (sscanf(one.c_str(), "%x:%u", &a, &n) == 2 && n && n <= 4096)
-            ranges.push_back({a & ~3u, (n + 3) & ~3u, {}});
+        if (!one.empty() && one[0] == '*') {
+            std::vector<uint32_t> chain;
+            size_t colon = one.find(':');
+            if (colon == std::string::npos) { at = end == std::string::npos ? spec.size() : end + 1; continue; }
+            std::string path = one.substr(1, colon - 1);
+            n = (unsigned)atoi(one.c_str() + colon + 1);
+            size_t q = 0;
+            while (q <= path.size()) {
+                size_t plus = path.find('+', q);
+                chain.push_back((uint32_t)strtoul(path.substr(q, plus == std::string::npos ? std::string::npos : plus - q).c_str(), nullptr, 16));
+                if (plus == std::string::npos) break;
+                q = plus + 1;
+            }
+            if (n && n <= 4096 && chain.size() >= 2) ranges.push_back({0, (n + 3) & ~3u, {}, chain});
+        } else if (sscanf(one.c_str(), "%x:%u", &a, &n) == 2 && n && n <= 4096)
+            ranges.push_back({a & ~3u, (n + 3) & ~3u, {}, {}});
         if (end == std::string::npos) break;
         at = end + 1;
     }
     for (int printed = 0; printed < max_prints;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         for (Range& r : ranges) {
+            if (!r.chain.empty()) {
+                uint32_t p = r.chain[0];
+                for (size_t k = 1; k < r.chain.size(); k++) {
+                    const uint8_t* b = vm_base + (p & ~3u);
+                    p = ((uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | b[3]) + r.chain[k];
+                }
+                if (!p || p >= 0xF0000000u) continue;
+                r.addr = p & ~3u;
+            }
             std::vector<uint8_t> now(vm_base + r.addr, vm_base + r.addr + r.len);
             if (now == r.last) continue;
             r.last = now;

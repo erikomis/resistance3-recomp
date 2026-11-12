@@ -16,8 +16,9 @@ toolkit, dos scripts, do runner e do launcher do port do Resistance 2. Veja
 [CREDITS.pt-BR.md](CREDITS.pt-BR.md).
 
 > [!WARNING]
-> **Ainda não dá para jogar.** O jogo inicia até a primeira tela e para no
-> vídeo de carregamento que vem depois dela. O que vem a seguir está no
+> **Ainda não validado.** O jogo chega aos menus e à primeira fase, e o
+> personagem agora anda no chão; a campanha ainda não foi jogada do começo ao
+> fim. O que vem a seguir está no
 > [ROADMAP.pt-BR.md](ROADMAP.pt-BR.md).
 >
 > **Este repositório não contém dados do jogo, firmware, chaves da Sony nem
@@ -27,14 +28,14 @@ toolkit, dos scripts, do runner e do launcher do port do Resistance 2. Veja
 
 ## Estado
 
-Em 2026-11-11: o disco 01.00 está traduzido e compilado; o primeiro boot
-copia 1,5 GB para o HD e mostra uma tela a 30 fps que espera o X, e o vídeo
-de carregamento depois dela trava (os jobs do Bink no sistema de jobs igPm
-da Insomniac nunca terminam).
+Em 2026-11-12: o disco 01.00 está traduzido e compilado. A instalação no HD,
+os vídeos, os menus, a primeira fase e a colisão funcionam (o personagem
+caía através do chão: faltava a janela de local store dos SPUs). A campanha
+ainda não foi validada.
 
 - O toolkit: ps3recomp v0.17.0 (`a6d76c8`) mais
   `patches/ps3recomp-a6d76c8-resistance3.patch`, o patch do Resistance 2 com
-  uma mudança até agora (`PS3_GAMEDATA_MARKERS`, abaixo).
+  as adaptações de instalação, SPURS e código SPU do Resistance 3.
 - `tools/r3_survey.py`, novo: identifica o EBOOT pelo hash PPU do RPCS3
   (01.00 do disco ou update 01.05, EUA ou Europa) e lista o que os ports
   anteriores tiveram que achar na mão: os ELFs SPU embutidos, os job modules

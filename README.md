@@ -16,8 +16,9 @@ port's toolkit patch, scripts, runner and launcher. See
 [CREDITS.md](CREDITS.md).
 
 > [!WARNING]
-> **Not playable yet.** The game boots to its first screen and stops at the
-> loading movie that follows it. What comes next is in
+> **Not validated yet.** The game reaches its menus and first level, and the
+> player now walks on the ground there; the campaign has not been played
+> through. What comes next is in
 > [ROADMAP.md](ROADMAP.md).
 >
 > **This repository contains no game data, no firmware, no Sony keys and
@@ -27,14 +28,14 @@ port's toolkit patch, scripts, runner and launcher. See
 
 ## Status
 
-As of 2026-11-11: the 01.00 disc is lifted and built; the first boot copies
-1.5 GB to the HDD and shows a 30 fps screen that waits for X, and the loading
-movie after it stalls (its Bink jobs on Insomniac's igPm job system never
-finish).
+As of 2026-11-12: the 01.00 disc is lifted and built. HDD installation,
+movies, menus, the first level and its collision work (the player used to
+fall through the floor: the SPU local-store window was missing). The
+campaign has not been validated.
 
 - The toolkit: ps3recomp v0.17.0 (`a6d76c8`) plus
   `patches/ps3recomp-a6d76c8-resistance3.patch`, the Resistance 2 patch with
-  one change so far (`PS3_GAMEDATA_MARKERS`, below).
+  Resistance 3 installation, SPURS and SPU adaptations.
 - `tools/r3_survey.py`, new: identifies the EBOOT by RPCS3's PPU hash
   (01.00 disc or 01.05 update, USA or Europe), and lists what the earlier
   ports had to find by hand: the embedded SPU ELFs, the WWS job modules, the

@@ -7,13 +7,27 @@ comes next. Same layout as the Resistance: Fall of Man and Resistance 2
 roadmaps. `[x]` = done and verified; `[ ]` = to do; "(in progress)" = being
 worked on.
 
-## Status at a glance (2026-11-11)
+## Status at a glance (2026-11-12)
 
-- **Boots to its first screen.** The 01.00 disc is decrypted, surveyed,
-  lifted (35,741 functions) and built; the first boot copies its 1.5 GB to
-  the HDD and shows a 30 fps screen that waits for X. Past X the loading
-  movie starts and the game stops: the Bink jobs on queues 3 and 4 of the
-  igPm job system never finish (next).
+- **Boots, plays movies, opens the menu and plays the first level.** The
+  01.00 disc is lifted and built, and the player walks on the ground: ground
+  probes return hits (4-18 per query) and the camera stays at floor height.
+- Fixed collision: CollBroad leaves its candidate list in its own local
+  store and CollNarrow GETs it through the SPU thread LS window
+  (EA 0xF0000000 + n*0x100000, here 0xF0007410). The MFC read that EA as
+  plain guest memory (zeros), so every probe tested 0 triangles and the
+  player fell through the world. The toolkit now serves the window from the
+  SPURS lane's context (`spu_ls_window_copy`, spurs_policy.c). Found with an
+  offline replay of CollNarrow from a live snapshot (`R3_COLL_SNAPSHOT`,
+  `R3_COLL_SNAPSHOT_LR=other`).
+- Fixed SPU fast dispatch: jobs that overwrite a policy module now use the
+  resident code, including relocatable modules. A regression test against
+  the real registry fails before the fix and passes afterwards. This fix
+  alone does not resolve gameplay collision.
+- A/B: interpreting CollBroad, CollNarrow and their ten submodules also
+  reproduces the fall. A fresh HDD1 does not resolve it either; the main
+  installed HDD0 archive has the same SHA256 as the disc: this is what
+  pointed at the runtime rather than the lift.
 
 ## Done
 
@@ -67,15 +81,17 @@ worked on.
 - [x] The loading movie (igBink jobs, lifted with `tools/lift_r3_igjobs.py`),
   the first autosave, the lobby (front end) and, pressing X through it, the
   first level (`haven_town_ridge`) at 30 fps.
-- [ ] Relocatable SPU modules: 18 DEADDEAD blobs as in Resistance 2, plus
-  ila-headed modules in a newer format (tables `igNav` and others).
+- [x] Relocatable SPU modules: 184 modules lifted by
+  `tools/lift_r3_relocmods.py` (151 ig and 33 DEADDEAD).
 - [ ] First boot: logos, the auto-save notice, input (Resistance 2 needed a
   front-end port-0 hook), menus.
 - [ ] The first boot's HDD install: which files Resistance 3 writes, for
   `PS3_GAMEDATA_MARKERS` and the launcher's `HDD_INSTALL_MARKERS`; the save
   slot names for the saves manager.
-- [ ] Movies (Bink on a raw SPU in Resistance 2).
-- [ ] New Game → the first level; then 30 fps throughout.
+- [x] Bink movies on the igPm queues; 3D cinematics also render.
+- [x] Player collision in the first level (SPU LS window).
+- [ ] Validate the campaign at 30 fps throughout (gameplay runs at 25-30 fps
+  with some SPU code still interpreted).
 - [ ] `tools/r3_survey.py --write-insn` and `RES_UNLOCK_FPS=1` / `RES_FOV` in
   play; then 60 fps.
 - [ ] Re-measure the disk space a full install takes (the launcher and

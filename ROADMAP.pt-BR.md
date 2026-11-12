@@ -7,13 +7,28 @@ vem a seguir. Mesmo formato dos roadmaps de Resistance: Fall of Man e
 Resistance 2. `[x]` = feito e verificado; `[ ]` = a fazer; "(em andamento)" =
 sendo trabalhado.
 
-## Resumo (2026-11-11)
+## Resumo (2026-11-12)
 
-- **Inicia até a primeira tela.** O disco 01.00 foi decriptado, analisado,
-  traduzido (35.741 funções) e compilado; o primeiro boot copia 1,5 GB para o
-  HD e mostra uma tela a 30 fps que espera o X. Depois do X começa o vídeo de
-  carregamento e o jogo para: os jobs do Bink nas filas 3 e 4 do sistema de
-  jobs do igPm nunca terminam (próximo).
+- **Inicia, reproduz vídeos, abre o menu e joga a primeira fase.** O disco
+  01.00 está traduzido e compilado, e o personagem anda no chão: as sondas de
+  chão retornam acertos (4 a 18 por consulta) e a câmera fica na altura do
+  piso.
+- Colisão corrigida: o CollBroad deixa a lista de candidatos no próprio local
+  store e o CollNarrow a lê por DMA pela janela de LS das threads SPU
+  (EA 0xF0000000 + n*0x100000, aqui 0xF0007410). O MFC lia esse endereço como
+  memória comum (zeros), então cada sonda testava 0 triângulos e o personagem
+  caía através do cenário. O toolkit agora atende a janela a partir do
+  contexto da lane SPURS (`spu_ls_window_copy`, spurs_policy.c). Achado com um
+  replay offline do CollNarrow a partir de um snapshot ao vivo
+  (`R3_COLL_SNAPSHOT`, `R3_COLL_SNAPSHOT_LR=other`).
+- Corrigido o despachante rápido SPU: jobs que ocupam a memória de um policy
+  module passam a usar o código residente, inclusive módulos relocáveis.
+  O teste de regressão com o registro real falha antes da correção e passa
+  depois. Isso, isoladamente, ainda não resolve a colisão na gameplay.
+- A/B: interpretar CollBroad, CollNarrow e seus dez submódulos também
+  reproduz a queda. Um HDD1 novo também não resolve; o arquivo principal
+  instalado no HDD0 tem o mesmo SHA256 do disco: foi isso que apontou para o
+  runtime, e não para a tradução.
 
 ## Feito
 
@@ -73,15 +88,17 @@ sendo trabalhado.
 - [x] O vídeo de carregamento (jobs do igBink, traduzidos com
   `tools/lift_r3_igjobs.py`), o primeiro autosave, o lobby (menu) e,
   apertando X por ele, a primeira fase (`haven_town_ridge`) a 30 fps.
-- [ ] Os módulos SPU relocáveis: 18 blobs DEADDEAD como no Resistance 2, e
-  módulos com cabeçalho ila num formato mais novo (tabelas `igNav` e outras).
+- [x] Módulos SPU relocáveis: 184 módulos traduzidos por
+  `tools/lift_r3_relocmods.py` (151 ig e 33 DEADDEAD).
 - [ ] Primeiro boot: logos, o aviso de auto-save, input (o Resistance 2
   precisou de um hook de porta 0 no front-end), menus.
 - [ ] A instalação no HD da primeira vez: quais arquivos o Resistance 3
   escreve, para o `PS3_GAMEDATA_MARKERS` e o `HDD_INSTALL_MARKERS` do
   launcher; os nomes dos slots de save para o gerenciador de saves.
-- [ ] Vídeos (Bink num raw SPU no Resistance 2).
-- [ ] New Game → a primeira fase; depois 30 fps do começo ao fim.
+- [x] Vídeos Bink nas filas do igPm; cinemáticas 3D também aparecem.
+- [x] Colisão do jogador na primeira fase (janela de LS dos SPUs).
+- [ ] Validar a campanha a 30 fps do começo ao fim (a gameplay roda a
+  25-30 fps com parte do código SPU ainda interpretado).
 - [ ] `tools/r3_survey.py --write-insn` e `RES_UNLOCK_FPS=1` / `RES_FOV`
   jogando; depois 60 fps.
 - [ ] Medir de novo o espaço em disco de uma instalação completa (o launcher

@@ -29368,20 +29368,38 @@ index f46d415..5a238b0 100644
   * brsl/bisl frame is live (host_depth>0); at 0 the frame was destroyed (task
   * resume / restack unwind) so dispatch to the link register instead -- faithful
 diff --git a/runtime/spu/spu_dispatch_mt.c b/runtime/spu/spu_dispatch_mt.c
-index d9f86bb..24e34c9 100644
+index d9f86bb..ba3d328 100644
 --- a/runtime/spu/spu_dispatch_mt.c
 +++ b/runtime/spu/spu_dispatch_mt.c
-@@ -54,7 +54,7 @@ void spu_indirect_branch_mt(spu_context* ctx)
-                     pc == SPURS_PM_SELECT_WORKLOAD_LS))
+@@ -18,7 +18,7 @@
+ #include <stdlib.h>
+ 
+ typedef void (*spu_dispatch_fn)(spu_context*);
+-spu_dispatch_fn spu_lookup(uint32_t addr, int image_id);  /* spu_channels.c (exported) */
++spu_dispatch_fn spu_lifted_lookup(const spu_context*, uint32_t);
+ void spu_indirect_branch(spu_context* ctx);               /* full resolver in the lib */
+ 
+ void spu_indirect_branch_mt(spu_context* ctx)
+@@ -55,11 +55,12 @@ void spu_indirect_branch_mt(spu_context* ctx)
                    || pc == SPURS_TASKSET_PM_SYSCALL_LS
                    || ctx->image_id == SPU_RESOLVER_ONLY_IMAGE_ID;
--    if (!special) {
-+    if (!special && !(ctx->reloc_floor && pc >= ctx->reloc_floor)) {
-         /* Resident overlay first (mirrors the full resolver): streamed plugin
-          * code owns its LS range; base-image entries at the same address are
-          * stale bytes and must lose. */
+     if (!special) {
+-        /* Resident overlay first (mirrors the full resolver): streamed plugin
+-         * code owns its LS range; base-image entries at the same address are
+-         * stale bytes and must lose. */
+-        spu_dispatch_fn fn = ctx->resident_ovl ? spu_lookup(pc, ctx->resident_ovl) : 0;
+-        if (!fn) fn = spu_lookup(pc, ctx->image_id);
++        /* Share the interpreter's residency-aware lookup. Fixed-address job
++         * regions can overwrite the PM too (R3's igPm jobs at LS 0x100),
++         * and are tracked in resident_code rather than resident_ovl. Looking
++         * up the base image directly can execute the overwritten PM's lift.
++         * This also validates PM bytes and sets code_base for relocations. */
++        spu_dispatch_fn fn = spu_lifted_lookup(ctx, pc);
+         if (fn) {
+             ctx->pc = pc;
+             __attribute__((musttail)) return fn(ctx);
 diff --git a/runtime/spu/spu_dma.h b/runtime/spu/spu_dma.h
-index 7b0debe..11a87e2 100644
+index 7b0debe..4eb2596 100644
 --- a/runtime/spu/spu_dma.h
 +++ b/runtime/spu/spu_dma.h
 @@ -163,6 +163,41 @@ static inline int mfc_is_fence(uint32_t cmd)
@@ -29426,7 +29444,107 @@ index 7b0debe..11a87e2 100644
  /*
   * Execute a single DMA transfer between local store and main memory.
   * Returns 0 on success, -1 on error.
-@@ -681,14 +716,14 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
+@@ -220,26 +255,58 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
+                               " size=%u covers 0x%08X\n",
+                       (uint32_t)spu->pc & SPU_LS_MASK, cmd, lsa, (uint32_t)ea, size,
+                       (uint32_t)s_w); } }
+-    /* SPU_DMA_RANGE=<lo>-<hi> (hex EAs): log transfers touching [lo,hi), first
+-     * 64 -- who reads or writes a buffer the RSX shares with the SPUs. */
+-    { static uint32_t s_lo = 1, s_hi;
++    /* SPU_DMA_RANGE=<lo>-<hi>: bounded diagnostic of transfers touching
++     * the selected guest range. Optional BYTES captures the source packet. */
++    { static uint32_t s_lo = 1, s_hi, s_bytes, s_max = 64;
+       if (s_lo == 1) { const char* e = getenv("SPU_DMA_RANGE"); s_lo = 0;
+-          if (e) { char* d; s_lo = (uint32_t)strtoul(e, &d, 16); if (*d == '-') s_hi = (uint32_t)strtoul(d + 1, 0, 16); } }
+-      if (s_hi && (uint32_t)ea < s_hi && (uint32_t)ea + size > s_lo) {
+-          static int _n = 0;
+-          if (PS3_LOG_FIRST(_n, 64))
+-              fprintf(stderr, "[dma-range] pc=0x%05X cmd=0x%X lsa=0x%05X ea=0x%08X size=%u\n",
+-                      (uint32_t)spu->pc & SPU_LS_MASK, cmd, lsa, (uint32_t)ea, size);
+-          /* ...and every 5 s, the bytes PUT into / GOT from the range. */
+-          { static volatile long long s_put, s_get; static unsigned long long s_t0;
+-            extern unsigned long long ps3_ms_now(void);
+-            if ((cmd & 0xF0) == 0x20) s_put += size; else if ((cmd & 0xF0) == 0x40) s_get += size;
+-            unsigned long long now = ps3_ms_now();
+-            if (!s_t0) s_t0 = now;
+-            if (now - s_t0 >= 5000) {
+-                fprintf(stderr, "[dma-range] %.0f B/s put, %.0f B/s get\n",
+-                        s_put * 1000.0 / (now - s_t0), s_get * 1000.0 / (now - s_t0));
+-                s_put = s_get = 0; s_t0 = now; } } } }
++          if (e) { char* d; s_lo = (uint32_t)strtoul(e, &d, 16); if (*d == '-') s_hi = (uint32_t)strtoul(d + 1, 0, 16); }
++          e = getenv("SPU_DMA_RANGE_BYTES"); if (e) s_bytes = (uint32_t)strtoul(e, 0, 0);
++          if (s_bytes > 256) s_bytes = 256;
++          e = getenv("SPU_DMA_RANGE_MAX"); if (e) s_max = (uint32_t)strtoul(e, 0, 0);
++      }
++      if (s_hi && (uint32_t)ea < s_hi && (uint64_t)(uint32_t)ea + size > s_lo) {
++          static unsigned _n;
++          if (__atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED) < s_max) {
++              char line[1600];
++              int used = snprintf(line, sizeof line, "[dma-range] img=%d pc=%05X lr=%05X cmd=%02X lsa=%05X ea=%08X size=%u:",
++                                  spu->image_id, (uint32_t)spu->pc & SPU_LS_MASK,
++                                  spu->gpr[0]._u32[0] & SPU_LS_MASK, cmd, lsa, (uint32_t)ea, size);
++              uint32_t n = size < s_bytes ? size : s_bytes;
++              if (vm_base && lsa <= SPU_LS_SIZE - n && ea + n <= 0x100000000ull) {
++                  const uint8_t* src = mfc_is_put(cmd) ? spu->ls + lsa : vm_base + (uint32_t)ea;
++                  for (uint32_t i = 0; i < n; i++)
++                      used += snprintf(line + used, sizeof line - used, "%s%02X", i % 4 ? "" : " ", src[i]);
++              }
++              fprintf(stderr, "%s\n", line);
++          }
++      }
++    }
++    /* Temporary R3 offline collision replay snapshot, opt-in and one-shot. */
++    /* R3_COLL_SNAPSHOT_LR=other: the first GET touching the request block
++     * 0x01272500..0x012725FF from any caller but CollBroad's (lr 0x1698). */
++    static int s_snap_other = -1;
++    if (s_snap_other < 0) { const char* e = getenv("R3_COLL_SNAPSHOT_LR"); s_snap_other = e && e[0] == 'o'; }
++    if (s_snap_other ? (mfc_is_get(cmd) && (uint32_t)ea < 0x01272600u && (uint32_t)ea + size > 0x01272500u &&
++                        (spu->gpr[0]._u32[0] & SPU_LS_MASK) != 0x1698u)
++                     : ((uint32_t)ea == 0x01272580u && cmd == 0x40u && size == 160u &&
++                        (spu->gpr[0]._u32[0] & SPU_LS_MASK) == 0x1698u)) {
++        static int taken;
++        const char* dir = getenv("R3_COLL_SNAPSHOT");
++        if (dir && *dir && !__atomic_exchange_n(&taken, 1, __ATOMIC_RELAXED)) {
++            char path[1024]; FILE* f;
++            snprintf(path, sizeof path, "%s/context.bin", dir); f = fopen(path, "wb");
++            if (f) { fwrite(spu, 1, sizeof(*spu), f); fclose(f); }
++            snprintf(path, sizeof path, "%s/ls.bin", dir); f = fopen(path, "wb");
++            if (f) { fwrite(spu->ls, 1, SPU_LS_SIZE, f); fclose(f); }
++            snprintf(path, sizeof path, "%s/gprs.bin", dir); f = fopen(path, "wb");
++            if (f) { fwrite(spu->gpr, 1, sizeof(spu->gpr), f); fclose(f); }
++            snprintf(path, sizeof path, "%s/globals.bin", dir); f = fopen(path, "wb");
++            if (f) { fwrite(vm_base + 0x00F00000u, 1, 0x00580000u, f); fclose(f); }
++            snprintf(path, sizeof path, "%s/heap.bin", dir); f = fopen(path, "wb");
++            if (f) { fwrite(vm_base + 0x40000000u, 1, 0x10000000u, f); fclose(f); }
++            fprintf(stderr, "[r3-snapshot] collision GET source=%08X dest=%05X size=%u cmd=%X pc=%05X lr=%05X img=%d -> %s\n", (uint32_t)ea, lsa, size, cmd, (uint32_t)spu->pc & SPU_LS_MASK, spu->gpr[0]._u32[0] & SPU_LS_MASK, spu->image_id, dir);
++        }
++    }
+     /* Malformed transfers are REJECTED, as the hardware MFC does. The rules
+      * are the ones the SDK's own dma.h asserts: a non-zero size, at most
+      * 16 KB, a multiple of 16 once >= 16 bytes, and LSA/EA sharing 16-byte
+@@ -413,6 +480,21 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
+     if ((uint64_t)lsa + (uint64_t)size > (uint64_t)SPU_LS_SIZE)
+         return -1;
+ 
++    /* EA 0xF0000000 + n*0x100000 + off: SPU thread n's local store (the
++     * thread-group LS window, spurs_policy.c spu_ls_window_copy). */
++    if (((uint32_t)ea - 0xF0000000u) < 0x00800000u && !(ea >> 32) &&
++        (mfc_is_get(cmd) || mfc_is_put(cmd))) {
++        extern int spu_ls_window_copy(spu_context*, uint32_t, uint32_t, uint8_t*, uint32_t, int);
++        const uint32_t n = ((uint32_t)ea - 0xF0000000u) >> 20, off = (uint32_t)ea & 0xFFFFFu;
++        if (spu_ls_window_copy(spu, n, off, &spu->ls[lsa], size, mfc_is_put(cmd)))
++            return 0;
++        { static int _n = 0;
++          if (PS3_LOG_FIRST(_n, 16))
++              fprintf(stderr, "[spu-dma] LS window %s not served: img=%d pc=0x%05X ea=0x%08X size=%u"
++                      " (SPU %u offset 0x%05X)\n", mfc_is_get(cmd) ? "GET" : "PUT", spu->image_id,
++                      (uint32_t)spu->pc & SPU_LS_MASK, (uint32_t)ea, size, n, off); }
++    }
++
+     /* Reject transfers whose main-memory range is not committed guest memory,
+      * so a garbage EA (e.g. from an incomplete SPURS context) is a failed DMA
+      * rather than a host segfault. */
+@@ -681,14 +763,14 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
              }
              if (span_reserved) {
                  spu_lockline_lock();
@@ -29443,7 +29561,7 @@ index 7b0debe..11a87e2 100644
                  for (uint32_t a = a0; ; a += 128u) {
                      if (spu_coh_is_reserved(a)) {
                          spu_lockline_lock();
-@@ -728,10 +763,19 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
+@@ -728,10 +810,19 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
          /* POISON-DMA detector: does an SPU PUT write the singleton object region
           * (0x40003000-0x40005000) or carry the 0xC708C708 poison? This host-side
           * memcpy bypasses vm_write32/AWATCH, so it's the prime suspect for the
@@ -29464,7 +29582,7 @@ index 7b0debe..11a87e2 100644
            for (uint32_t o = 0; o + 4 <= size; o += 4) {
                uint32_t w; memcpy(&w, (const char*)ls_ptr + o, 4);
                if (w == 0x08C708C7u) { haspoison = 1; break; } /* 0xC708C708 BE in LS bytes */
-@@ -795,7 +839,7 @@ static inline int mfc_run_list(spu_context* spu, uint32_t elem_lsa,
+@@ -795,7 +886,7 @@ static inline int mfc_run_list(spu_context* spu, uint32_t elem_lsa,
              spu->list_stall_cmd[t]       = base_cmd;
              spu->list_stall_mask |= (1u << t);  /* this tag now has a parked list */
              spu->list_stall_stat |= (1u << t);  /* accumulate into the notify mask */
@@ -29473,7 +29591,7 @@ index 7b0debe..11a87e2 100644
              /* Real MFC runs a queued list asynchronously, so the notify lands
               * AFTER the arming code finishes. We run it inline here, so hold the
               * resulting interrupt off for a few drain ticks -- otherwise the WWS
-@@ -911,6 +955,51 @@ static inline int mfc_enqueue(mfc_engine* mfc, spu_context* spu)
+@@ -911,6 +1002,51 @@ static inline int mfc_enqueue(mfc_engine* mfc, spu_context* spu)
   * Submit and immediately execute an MFC command.
   * This is the main entry point called when the SPU writes to MFC_Cmd.
   */
@@ -29525,7 +29643,7 @@ index 7b0debe..11a87e2 100644
  static inline int mfc_submit(mfc_engine* mfc, spu_context* spu, uint32_t cmd)
  {
      /* SPU_CMDHIST=1: every MFC command that reaches the engine, by opcode and
-@@ -1231,27 +1320,64 @@ static inline int mfc_submit(mfc_engine* mfc, spu_context* spu, uint32_t cmd)
+@@ -1231,27 +1367,64 @@ static inline int mfc_submit(mfc_engine* mfc, spu_context* spu, uint32_t cmd)
       * count-only rule halted a healthy job and wedged the frame. Halt only once
       * the repeats have also lasted SPU_DMA_REPEAT_SECS (default 30) of wall
       * time. Below that, back off 1 ms per repeat rather than spinning. */
@@ -29606,7 +29724,7 @@ index 7b0debe..11a87e2 100644
  
      /* Mark tag as in-progress */
      mfc->tag_completed &= ~(1u << tag);
-@@ -1426,14 +1552,20 @@ static inline int mfc_submit(mfc_engine* mfc, spu_context* spu, uint32_t cmd)
+@@ -1426,14 +1599,20 @@ static inline int mfc_submit(mfc_engine* mfc, spu_context* spu, uint32_t cmd)
           * sequence is exactly what the pipeline diagnosis needs. */
          extern uint32_t g_barrier_sync_watch;
          static int _post = 0;
@@ -31623,7 +31741,7 @@ index bb8f122..81dd81d 100644
  extern uint8_t* vm_base;
  extern int spu_run_with_halt(void (*)(spu_context*), spu_context*);
 diff --git a/runtime/spu/spurs_policy.c b/runtime/spu/spurs_policy.c
-index 905b351..bb79ccb 100644
+index 905b351..c9688a4 100644
 --- a/runtime/spu/spurs_policy.c
 +++ b/runtime/spu/spurs_policy.c
 @@ -27,6 +27,7 @@
@@ -31634,7 +31752,7 @@ index 905b351..bb79ccb 100644
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
-@@ -96,6 +97,62 @@ static void policy_slot_release(struct PmSlot* slot)
+@@ -96,6 +97,103 @@ static void policy_slot_release(struct PmSlot* slot)
  /* Quiescent workload removal must retire its incarnation even when the next
   * registration has identical image and data. Never wait under admission locks:
   * a direct caller that still owns a reference makes removal BUSY instead. */
@@ -31667,6 +31785,47 @@ index 905b351..bb79ccb 100644
 +    ReleaseSRWLockExclusive(&s_pm_directory_lock);
 +}
 +
++/* The SPU thread local-store window: an SPU in a thread group sees every
++ * member's LS at EA 0xF0000000 + n*0x100000 (lv2's SYS_SPU_THREAD_BASE_LOW /
++ * SYS_SPU_THREAD_OFFSET), and DMA through it moves LS to LS. Resistance 3's
++ * CollBroad leaves its candidate list in its own LS (0xF0007410 on SPU 0) and
++ * CollNarrow GETs it from there: read from plain guest memory instead, every
++ * ground probe found 0 triangles and the player fell through the world.
++ * For a SPURS lane, member n is lane n of the same instance: its context for
++ * the caller's policy module (same image) if there is one, else any resident
++ * one. Returns 1 when the transfer was done. */
++int spu_ls_window_copy(spu_context* self, uint32_t n, uint32_t off, uint8_t* ls, uint32_t size, int is_put)
++{
++    extern int spurs_vspu_lookup(uint32_t tid, uint32_t* spurs_ea, uint32_t* lane);
++    uint32_t ea, lane;
++    if (!self->vspu_tid || !spurs_vspu_lookup(self->vspu_tid, &ea, &lane) || n >= 6) return 0;
++    if (off >= SPU_LS_SIZE || size > SPU_LS_SIZE - off) return 0;
++    if (n == lane) {
++        if (is_put) memmove(self->ls + off, ls, size); else memmove(ls, self->ls + off, size);
++        return 1;
++    }
++    int done = 0;
++    AcquireSRWLockShared(&s_pm_directory_lock);
++    for (unsigned i = 0; i < SPURS_PM_INSTANCES && !done; i++) {
++        struct PmInstance* pi = &s_pm_instances[i];
++        if (!pi->used || pi->ea != ea) continue;
++        spu_context* peer = NULL;
++        for (unsigned w = 0; w < 16; w++) {
++            spu_context* c = pi->slots[w][n].ctx;
++            if (!c) continue;
++            if (c->image_id == self->image_id) { peer = c; break; }
++            if (!peer) peer = c;
++        }
++        if (peer) {
++            if (is_put) memcpy(peer->ls + off, ls, size); else memcpy(ls, peer->ls + off, size);
++            done = 1;
++        }
++        break;
++    }
++    ReleaseSRWLockShared(&s_pm_directory_lock);
++    return done;
++}
++
 +/* sys_spu_thread_write_spu_mb on a SPURS lane's synthetic id: the PPU's
 + * answer to an event the lane sent (an SPU printf handler writes the SPU's
 + * inbound mailbox to release it). Delivered to every policy-module context
@@ -31697,7 +31856,7 @@ index 905b351..bb79ccb 100644
  int spurs_policy_release_workload(uint32_t ea, uint32_t wid)
  {
      if (wid >= 16) return -1;
-@@ -152,6 +209,34 @@ void spurs_policy_release_instance(uint32_t ea)
+@@ -152,6 +250,34 @@ void spurs_policy_release_instance(uint32_t ea)
      ReleaseSRWLockExclusive(&s_pm_directory_lock);
  }
  
@@ -31732,7 +31891,7 @@ index 905b351..bb79ccb 100644
  int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
                            const uint8_t* pm_host, uint32_t pm_size,
                            uint64_t wkl_data, uint32_t wid, uint32_t spurs_ea,
-@@ -159,6 +244,12 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
+@@ -159,6 +285,12 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
  {
      if (!entry || !pm_host || !pm_size || pm_size > SPU_LS_SIZE - 0xA00)
          return -1;
@@ -31745,7 +31904,7 @@ index 905b351..bb79ccb 100644
  
      /* Reuse one context per thread: this runs per policy dispatch (thousands
       * per second with the SPURS workload churn live), and a fresh 260KB
-@@ -199,7 +290,6 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
+@@ -199,7 +331,6 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
      if (!ctx) {
          ctx = (spu_context*)malloc(sizeof(spu_context));
          if (!ctx) { policy_slot_release(resident); return -1; }
@@ -31753,7 +31912,7 @@ index 905b351..bb79ccb 100644
          first = 1;
          /* SPU_CTX_LOG=1: policy-module contexts are PERSISTENT and there is one
           * per (workload, spu_num) -- a workload with readyCount 8 legitimately
-@@ -211,8 +301,14 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
+@@ -211,8 +342,14 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
            if (s_cl < 0) s_cl = getenv("SPU_CTX_LOG") ? 1 : 0;
            if (s_cl) fprintf(stderr, "[spu-ctx] new POLICY context %p wid=%u spu_num=%u\n",
                              (void*)ctx, wid, spu_num); }
@@ -31768,7 +31927,7 @@ index 905b351..bb79ccb 100644
      } else if (s_fresh || resident->data != wkl_data ||
                 resident->pm != pm_host || resident->size != pm_size ||
                 resident->entry != entry || resident->image_id != image_id) {
-@@ -225,20 +321,49 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
+@@ -225,20 +362,49 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
                          (unsigned long long)wkl_data);
          }
          first = 1;
@@ -31818,7 +31977,7 @@ index 905b351..bb79ccb 100644
  
      /* SpursKernelContext at LS 0x100 (fields big-endian, like all guest data). */
      uint8_t* ls = ctx->ls;
-@@ -265,6 +390,26 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
+@@ -265,6 +431,26 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
      KBE32(0x1DC, wid);                  /* wklCurrentId             */
      KBE32(0x1E0, SPURS_PM_EXIT_TO_KERNEL_LS);
      KBE32(0x1E4, SPURS_PM_SELECT_WORKLOAD_LS);
@@ -31845,7 +32004,7 @@ index 905b351..bb79ccb 100644
  #undef KBE32
  
      /* Entry registers per cellSpursModuleEntry. */
-@@ -282,12 +427,42 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
+@@ -282,12 +468,42 @@ int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
       * list's per-SPU cursor rows (SPU 0-3) and first job slots (SPU 4): the
       * "ticket values exploding" with extra SPUs. Titles pass a 32-bit list
       * EA (high half 0), so audit stays off, as on hardware. */
@@ -32053,6 +32212,99 @@ index 0000000..9c984d2
 +
 +uint32_t g_spu_image_src_ea, g_spu_image_ls_start, g_spu_image_span;
 +void spu_thread_publish_ctx(uint32_t tid, void* ctx) { (void)tid; (void)ctx; }
+diff --git a/runtime/spu/tests/test_spu_dispatch_residency.c b/runtime/spu/tests/test_spu_dispatch_residency.c
+new file mode 100644
+index 0000000..891fcf4
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_dispatch_residency.c
+@@ -0,0 +1,87 @@
++/* Real registry/dispatcher regression, with synthetic code and no game data.
++ * Build/run with tools/test_spu_dispatch_residency.py. */
++#include "../spu_helpers.h"
++#include "../spu_interp.h"
++#include <assert.h>
++#include <stdio.h>
++#include <string.h>
++
++uint8_t* vm_base;
++uint32_t ppu_vm_size;
++/* No SPURS instance is created by this fixture. */
++int spurs_vspu_lookup(uint32_t tid, uint32_t* ea, uint32_t* lane) {
++    (void)tid; (void)ea; (void)lane; return 0;
++}
++uint32_t spurs_vspu_tid_for(uint32_t ea, uint32_t lane) {
++    (void)ea; (void)lane; return 0;
++}
++int spurs_vspu_snr(uint32_t ea, uint32_t lane, uint32_t n, uint32_t* v) {
++    (void)ea; (void)lane; (void)n; (void)v; return 0;
++}
++extern void spu_indirect_branch_mt(spu_context*);
++extern void spu_begin_image(int);
++extern void spu_register_function(uint32_t, void (*)(spu_context*));
++extern void spu_overlay_register_region_reloc(uint32_t, uint32_t, int);
++extern int spu_run_with_halt(void (*)(spu_context*), spu_context*);
++static int called;
++static void stale(spu_context* c) { (void)c; called = 1; }
++static void resident(spu_context* c) { (void)c; called = 2; }
++
++int main(void) {
++    static spu_context c;
++    static uint8_t pm[0x200];
++    spu_context_init(&c, 0);
++    c.pc = 0xB00; c.image_id = 77; c.policy_mode = 1;
++    spu_begin_image(77); spu_register_function(0xB00, stale);
++    spu_begin_image(78); spu_register_function(0xB00, resident);
++    c.resident_code[0].lsa = 0x100;
++    c.resident_code[0].size = 0x7000;
++    c.resident_code[0].image_id = 78;
++    spu_indirect_branch_mt(&c);
++    assert(called == 2); /* job, never the overwritten PM */
++
++    /* When streamed bytes have no lift, the stale PM must not execute. */
++    c.resident_code[0].image_id = 0;
++    c.pm_image = pm; c.pm_image_size = sizeof pm;
++    pm[0x100] = 0x40; /* deliberately differs from the stop in live LS */
++    c.ls[0xB02] = 1; c.ls[0xB03] = 0x23; /* stop 0x123 */
++    c.pc = 0xB00; c.status = SPU_STATUS_RUNNING; called = 0;
++    assert(spu_run_with_halt(spu_indirect_branch_mt, &c));
++    assert(called == 0 && c.stop_code == 0x123);
++
++    /* Relative registry addresses must resolve with the current load base. */
++    spu_begin_image(300); spu_register_function(0x30, resident);
++    spu_overlay_register_region_reloc(0x100000, 0x100, 300);
++    c.resident_code[0].lsa = 0x8000;
++    c.resident_code[0].size = 0x100;
++    c.resident_code[0].image_id = 300;
++    c.resident_code[0].reloc = 1;
++    c.pc = 0x8030; c.reloc_floor = 0x8000; called = 0;
++    spu_indirect_branch_mt(&c);
++    assert(called == 2 && c.code_base == 0x8000);
++    c.resident_code[0].image_id = 0;
++    c.pm_image = NULL; c.reloc_floor = 0;
++    c.pc = 0xB00; c.resident_ovl = 0; called = 0;
++    spu_indirect_branch_mt(&c); assert(called == 1);
++    c.resident_ovl = 78; called = 0;
++    spu_indirect_branch_mt(&c); assert(called == 2);
++    puts("SPU musttail dispatch residency: PASS");
++}
++
++/* Link-only boundaries outside this CPU-only fixture. Fail if any is reached. */
++/* spu_workload.c can retain the LV2 runner's publication calls at link time;
++ * this fixture runs its own context directly, without an LV2 SPU thread. */
++void spu_thread_publish_ctx(uint32_t tid, void* c) { (void)tid; (void)c; abort(); }
++void ppu_resv_break_store(uint64_t ea) { (void)ea; abort(); }
++void ps3_ww_report_inline(uint32_t a, uint64_t v, int w) { (void)a; (void)v; (void)w; abort(); }
++unsigned long long ps3_ms_now(void) { abort(); }
++uint32_t g_ww_lo = 0xFFFFFFFFu, g_ww_hi;
++int g_resv_store_active;
++uint32_t g_barrier_sync_watch;
++uint32_t g_ydkj_real_spurs_ea, g_ydkj_real_taskset_ea, g_ydkj_real_taskid;
++void spurs_ef_set_from_spu(uint32_t ea, uint16_t bits) { (void)ea; (void)bits; abort(); }
++void ydkj_wake_all_event_flags(void) { abort(); }
++void spurs_pm_build_context(spu_context* c, uint32_t a, uint32_t b, uint32_t d) {
++    (void)c; (void)a; (void)b; (void)d; abort();
++}
++uint32_t g_spu_image_src_ea, g_spu_image_ls_start, g_spu_image_span;
 diff --git a/runtime/spu/tests/test_spu_dma_repeat.c b/runtime/spu/tests/test_spu_dma_repeat.c
 new file mode 100644
 index 0000000..add088d
@@ -53330,6 +53582,37 @@ index 0000000..354edf1
 +                    *[str(root / s) for s in sources],
 +                    '-o', str(binary), '-lpthread', '-lm'], check=True)
 +    subprocess.run([str(binary)], check=True, timeout=60)
+diff --git a/tools/test_spu_dispatch_residency.py b/tools/test_spu_dispatch_residency.py
+new file mode 100644
+index 0000000..04d9561
+--- /dev/null
++++ b/tools/test_spu_dispatch_residency.py
+@@ -0,0 +1,25 @@
++#!/usr/bin/env python3
++"""Exercise musttail dispatch against real resident-code and PM lookups."""
++import os
++import subprocess
++import tempfile
++from pathlib import Path
++
++if os.name == 'nt':
++    print('SKIP: fixture currently requires the POSIX compiler/linker')
++    raise SystemExit(0)
++root = Path(__file__).resolve().parents[1]
++spu = root / 'runtime/spu'
++sources = ['spu_channels.c', 'spu_drain.c', 'spu_lockstep.c', 'spu_coherency.c',
++           'spu_workload.c', 'spurs_policy.c', 'spurs_job.c', 'spu_tsp_weak.c',
++           'spu_vm_pagemap.c', 'spurs_policy_blob_weak.c', 'spu_interp.c', 'spu_dispatch_mt.c']
++with tempfile.TemporaryDirectory(prefix='spu-dispatch-residency-') as tmp:
++    binary = Path(tmp) / 'test'
++    subprocess.run([os.environ.get('CC', 'clang'), '-std=gnu17', '-O1', '-UNDEBUG',
++                    '-I'+str(root/'include'), '-I'+str(spu),
++                    '-I'+str(root/'runtime/platform'),
++                    str(spu/'tests/test_spu_dispatch_residency.c'),
++                    *[str(spu / name) for name in sources],
++                    str(root/'runtime/platform/win32_compat.c'), '-pthread', '-lm',
++                    '-o', str(binary)], check=True)
++    subprocess.run([str(binary)], check=True, timeout=10, cwd=tmp)
 diff --git a/tools/test_spu_dma_repeat.py b/tools/test_spu_dma_repeat.py
 new file mode 100644
 index 0000000..183e6e9

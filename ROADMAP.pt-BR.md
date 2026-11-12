@@ -9,9 +9,11 @@ sendo trabalhado.
 
 ## Resumo (2026-11-11)
 
-- **Montado, esperando o disco.** Os scripts, o patch do toolkit, o runner e
-  o launcher estão no lugar e compilam; nada do Resistance 3 foi decriptado,
-  traduzido ou iniciado ainda.
+- **Inicia até a primeira tela.** O disco 01.00 foi decriptado, analisado,
+  traduzido (35.741 funções) e compilado; o primeiro boot copia 1,5 GB para o
+  HD e mostra uma tela a 30 fps que espera o X. Depois do X começa o vídeo de
+  carregamento e o jogo para: os jobs do Bink nas filas 3 e 4 do sistema de
+  jobs do igPm nunca terminam (próximo).
 
 ## Feito
 
@@ -44,22 +46,35 @@ sendo trabalhado.
 - [x] "Unlock FPS" e "Extended FOV" do RPCS3 para 01.00 e 01.05 ligados no
   `port/patches.cpp` (`RES_UNLOCK_FPS`, `RES_FOV`), presos às palavras geradas
   a partir do EBOOT do jogador.
+- [x] O disco (BCUS98176 01.00, hash do RPCS3 `PPU-502feb23…`): decriptado,
+  analisado (3 ELFs SPU, 3 job modules, 18 blobs relocáveis; o `game.self` é
+  o próprio EBOOT, então é um executável só), traduzido (35.741 funções) e
+  compilado.
+- [x] A tarefa de inflate do Edge zlib (o descompressor dos `.psarc`) é um ELF
+  SPU sem seções cujo segmento de texto termina em dados: o gerador SPU do
+  toolkit aceita `--text-end` por imagem (o `port/CMakeLists.txt` passa), e
+  ela é traduzida.
+- [x] Os dois policy modules SPURS crus traduzidos: Wws_Job
+  (`tools/prepare_r3_job_pm.py`) e o igPm da Insomniac
+  (`tools/prepare_r3_ig_pm.py`, novo desde o Resistance 2).
+- [x] O igPm roda nas cinco SPUs da instância "ig", cada uma atendendo a fila
+  de jobs cujo número o jogo escreve no seu SNR1. Toolkit: ids de thread SPU
+  para as SPUs da SPURS no `cellSpursGetInfo` e `sys_spu_thread_write_snr`
+  nelas; a tradução de um policy module não é usada depois que código é
+  carregado por cima dele. Runner: `SPURS_WIDEN=0` e `SPU_CH_BLOCK=1` por
+  padrão.
+- [x] O `tools/rebuild.sh` compila uma parte por 10 GB de RAM, em prioridade
+  baixa (o padrão do Ninja travou um Mac de 24 GB).
+- [x] A cópia para o HD do primeiro boot (bancos de som, 1,5 GB, 5.218
+  arquivos) e a primeira tela a 30 fps.
 
 ## Próximos
 
-- [ ] Fazer o dump do disco; `tools/install.sh` (ou `tools/rebuild.sh toolkit
-  decrypt survey`). Anotar a versão (01.00 ou 01.05) e a revisão da chave
-  (`tools/decrypt_self.py --info`).
-- [ ] Ler o survey: quantos ELFs SPU, job modules e blobs relocáveis; se há o
-  loader `igInitRawSpu` e programas de raw SPU (Bink); se há um segundo
-  executável (um exitspawn, como o `game.self` do Resistance 1).
-- [ ] Analisar e traduzir o EBOOT; compilar e linkar tudo (o lift vai ser
-  maior que as ~41.500 funções do Resistance 2).
-- [ ] O código SPU cru, seguindo as ferramentas do Resistance 2: o policy
-  module Wws_Job (`prepare_r2_job_pm.py`), o loader e os programas de raw SPU
-  (`prepare_r2_rawspu_loader.py`, `prepare_r2_rawspu.py`), os módulos
-  relocáveis (`lift_r2_relocmods.py`), como `tools/prepare_r3_*.py` e
-  `tools/lift_r3_relocmods.py` com os endereços e fingerprints do Resistance 3.
+- [ ] O vídeo de carregamento: os jobs do Bink que o igPm roda nas filas 3 e 4
+  (carregados por cima do policy module, então interpretados) nunca
+  terminam, e a thread principal espera por eles no `SpuJob::SyncJob`.
+- [ ] Os módulos SPU relocáveis: 18 blobs DEADDEAD como no Resistance 2, e
+  módulos com cabeçalho ila num formato mais novo (tabelas `igNav` e outras).
 - [ ] Primeiro boot: logos, o aviso de auto-save, input (o Resistance 2
   precisou de um hook de porta 0 no front-end), menus.
 - [ ] A instalação no HD da primeira vez: quais arquivos o Resistance 3

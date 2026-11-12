@@ -151,6 +151,15 @@ set(PORT_SPU_INPUTS "" CACHE STRING
 set(SPU_SOURCES "")
 if(PORT_ENABLE_SPU AND PORT_SPU_INPUTS)
     include("${PS3RECOMP_DIR}/cmake/PS3RecompSPU.cmake")
+    # Resistance 3 (BCUS98176 01.00) embeds the Edge zlib inflate task (the
+    # .psarc decompressor) as a stripped SPU ELF: no section headers, so its
+    # one executable PT_LOAD (LS 0x3000-0xC350) is lifted whole, and from
+    # 0xB290 on it is read-only data (the "EDGE ASSERTION FAILURE" strings and
+    # inflate tables) the lifter decodes as 213 invalid words. The last
+    # function returns at 0xB28C. Named by content hash, so it never applies to
+    # another EBOOT's image (the generator skips names it does not find).
+    set(PS3RECOMP_SPU_GENERATOR_ARGS
+        --text-end spu_d08b1ad818d026818f1c7cbb2bef448d242a9ae51aab4c7bce69f2ad14308355=0xB290)
     ps3recomp_generate_spu("${CMAKE_CURRENT_BINARY_DIR}/generated_spu" ${PORT_SPU_INPUTS})
     list(APPEND SPU_SOURCES ${SPU_GENERATED_SOURCES}
          "${PS3RECOMP_DIR}/runtime/spu/spu_dispatch_mt.c")

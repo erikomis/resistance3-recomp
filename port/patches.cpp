@@ -31,7 +31,11 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <chrono>
 #include <cstdlib>
+#include <string>
+#include <thread>
+#include <vector>
 #include <cstring>
 #include "ppu_recomp.h"
 
@@ -119,8 +123,56 @@ void http_poll_unavailable(ppu_context* ctx)
 }  // namespace
 
 /* Apply what the environment asks for to the ELF just loaded. */
+
+/* RES_PEEK=<hex addr>:<bytes>[,<hex addr>:<bytes>...]: a debugging aid. A
+ * host thread prints those guest ranges as big-endian words every
+ * RES_PEEK_MS (default 2000) ms, when they changed since the last print, for
+ * the first RES_PEEK_MAX (default 60) prints, starting RES_PEEK_FROM seconds
+ * in (default 0). For watching a job queue or a flag a thread waits on
+ * without stopping the game. */
+static void peek_thread(std::string spec, unsigned ms)
+{
+    const char* mx = getenv("RES_PEEK_MAX");
+    const char* from = getenv("RES_PEEK_FROM");
+    const int max_prints = mx ? atoi(mx) : 60;
+    if (from) std::this_thread::sleep_for(std::chrono::seconds(atoi(from)));
+    struct Range { uint32_t addr, len; std::vector<uint8_t> last; };
+    std::vector<Range> ranges;
+    for (size_t at = 0; at < spec.size();) {
+        size_t end = spec.find(',', at);
+        std::string one = spec.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        unsigned a = 0, n = 0;
+        if (sscanf(one.c_str(), "%x:%u", &a, &n) == 2 && n && n <= 4096)
+            ranges.push_back({a & ~3u, (n + 3) & ~3u, {}});
+        if (end == std::string::npos) break;
+        at = end + 1;
+    }
+    for (int printed = 0; printed < max_prints;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        for (Range& r : ranges) {
+            std::vector<uint8_t> now(vm_base + r.addr, vm_base + r.addr + r.len);
+            if (now == r.last) continue;
+            r.last = now;
+            printed++;
+            for (uint32_t o = 0; o < r.len; o += 32) {
+                char line[160];
+                int k = snprintf(line, sizeof line, "[peek] %08X:", r.addr + o);
+                for (uint32_t i = o; i < o + 32 && i < r.len; i += 4)
+                    k += snprintf(line + k, sizeof line - k, " %02X%02X%02X%02X",
+                                  now[i], now[i + 1], now[i + 2], now[i + 3]);
+                fprintf(stderr, "%s\n", line);
+            }
+        }
+    }
+}
+
 extern "C" void res_apply_patches(void)
 {
+    if (const char* peek = getenv("RES_PEEK")) {
+        const char* ms = getenv("RES_PEEK_MS");
+        if (vm_base && *peek)
+            std::thread(peek_thread, std::string(peek), ms ? (unsigned)atoi(ms) : 2000u).detach();
+    }
     const char* http = getenv("RES_HTTP_POLL_COMPAT");
     if (!(http && http[0] == '0'))
         ps3_hle_register_ctx(0xADC0A4B2u, "cellHttpClientPollConnections (unavailable)",

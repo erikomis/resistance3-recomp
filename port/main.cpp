@@ -681,6 +681,32 @@ int main(int argc, char** argv)
         else if (strcmp(s, "0") == 0) unsetenv("SPURS_RPCS3_SCHED");
 #endif
     }
+    /* Resistance 3's "ig" SPURS instance runs its igPm policy module on all
+     * five of its SPUs at once: the game writes each SPU's number to its SNR1
+     * and igPm serves the job queue of that number (queue 2 the per-frame
+     * igBucketer job, queues 3 and 4 the Bink movie jobs). The workload is
+     * added with max contention 1 and ready count 5, and the toolkit's
+     * kernel honours the 1, so SPURS_WIDEN=0 runs wid 0 on every SPU of its
+     * instance (the other instance's wid 0 has one SPU, so it is unchanged).
+     * SPU_CH_BLOCK=1: an empty SNR1 read blocks until the game writes it, as
+     * on the console; without it the read returned a stale 0 and every lane
+     * served queue 0, and an idle igPm spun on its lock-line wait at 100% of
+     * a core instead of sleeping. Each is turned off with =off. */
+    {
+        const char* w = getenv("SPURS_WIDEN");
+        const char* b = getenv("SPU_CH_BLOCK");
+#ifdef _WIN32
+        if (!w) _putenv_s("SPURS_WIDEN", "0");
+        else if (strcmp(w, "off") == 0) _putenv_s("SPURS_WIDEN", "");
+        if (!b) _putenv_s("SPU_CH_BLOCK", "1");
+        else if (strcmp(b, "off") == 0 || strcmp(b, "0") == 0) _putenv_s("SPU_CH_BLOCK", "");
+#else
+        if (!w) setenv("SPURS_WIDEN", "0", 1);
+        else if (strcmp(w, "off") == 0) unsetenv("SPURS_WIDEN");
+        if (!b) setenv("SPU_CH_BLOCK", "1", 1);
+        else if (strcmp(b, "off") == 0 || strcmp(b, "0") == 0) unsetenv("SPU_CH_BLOCK");
+#endif
+    }
     /* Real sys_lwcond notifications instead of the 1 ms sleep-and-retry
      * fallback. Resistance 2's job/loader worker pools (func_00B11A80 x14,
      * func_007D9EB8 x8) hand work over through lwconds; at ~1.2 ms per

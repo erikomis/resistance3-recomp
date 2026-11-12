@@ -16,10 +16,9 @@ toolkit, dos scripts, do runner e do launcher do port do Resistance 2. Veja
 [CREDITS.pt-BR.md](CREDITS.pt-BR.md).
 
 > [!WARNING]
-> **Ainda não dá para jogar.** Este é o ponto de partida: os scripts de
-> build, o patch do toolkit, o runner e o launcher, prontos para o primeiro
-> EBOOT. Nada do Resistance 3 foi recompilado nem iniciado ainda. O que vem a
-> seguir está no [ROADMAP.pt-BR.md](ROADMAP.pt-BR.md).
+> **Ainda não dá para jogar.** O jogo inicia até a primeira tela e para no
+> vídeo de carregamento que vem depois dela. O que vem a seguir está no
+> [ROADMAP.pt-BR.md](ROADMAP.pt-BR.md).
 >
 > **Este repositório não contém dados do jogo, firmware, chaves da Sony nem
 > nada traduzido deles.** Cada um gera tudo isso localmente a partir da sua
@@ -28,8 +27,10 @@ toolkit, dos scripts, do runner e do launcher do port do Resistance 2. Veja
 
 ## Estado
 
-Em 2026-11-11: o repositório está montado e compila contra o toolkit com o
-patch (verificado com o lift de outro jogo); falta o disco.
+Em 2026-11-11: o disco 01.00 está traduzido e compilado; o primeiro boot
+copia 1,5 GB para o HD e mostra uma tela a 30 fps que espera o X, e o vídeo
+de carregamento depois dela trava (os jobs do Bink no sistema de jobs igPm
+da Insomniac nunca terminam).
 
 - O toolkit: ps3recomp v0.17.0 (`a6d76c8`) mais
   `patches/ps3recomp-a6d76c8-resistance3.patch`, o patch do Resistance 2 com

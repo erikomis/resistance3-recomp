@@ -16,9 +16,8 @@ port's toolkit patch, scripts, runner and launcher. See
 [CREDITS.md](CREDITS.md).
 
 > [!WARNING]
-> **Not playable yet.** This is the starting point: the build scripts, the
-> toolkit patch, the runner and the launcher, ready for the first EBOOT. Nothing
-> of Resistance 3 has been lifted or booted. What comes next is in
+> **Not playable yet.** The game boots to its first screen and stops at the
+> loading movie that follows it. What comes next is in
 > [ROADMAP.md](ROADMAP.md).
 >
 > **This repository contains no game data, no firmware, no Sony keys and
@@ -28,8 +27,10 @@ port's toolkit patch, scripts, runner and launcher. See
 
 ## Status
 
-As of 2026-11-11: the repository is set up and builds against the patched
-toolkit (checked with another title's lift); it waits for the disc.
+As of 2026-11-11: the 01.00 disc is lifted and built; the first boot copies
+1.5 GB to the HDD and shows a 30 fps screen that waits for X, and the loading
+movie after it stalls (its Bink jobs on Insomniac's igPm job system never
+finish).
 
 - The toolkit: ps3recomp v0.17.0 (`a6d76c8`) plus
   `patches/ps3recomp-a6d76c8-resistance3.patch`, the Resistance 2 patch with

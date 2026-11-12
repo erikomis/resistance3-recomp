@@ -124,3 +124,30 @@ def check_image(dest, raw, what, script):
     image = Path(dest) / "image.bin"
     if not image.is_file() or image.read_bytes() != raw:
         raise SystemExit(f"{image} is missing or stale: run tools/{script}")
+
+
+def pm_main(doc, va, size, fingerprint, name):
+    """The command line of a tools/prepare_r3_<name>.py for a SPURS policy
+    module embedded as raw bytes: cut size bytes at EBOOT va, check their
+    FNV-1a (what cellSpurs fingerprints when the workload is added), lift them
+    at LS 0xA00 (where the SPURS kernel loads a policy module) into
+    port/spu/r3_<name>/. port/spu/r3_<name>/register.c registers the lift
+    under that fingerprint; re-run cmake afterwards."""
+    import argparse
+    parser = argparse.ArgumentParser(description=doc,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--check", action="store_true", help="only check the current extraction")
+    parser.add_argument("--eboot", type=Path, default=eboot())
+    parser.add_argument("--dest", type=Path, default=SPU_DIR / f"r3_{name}")
+    parser.add_argument("--toolkit", type=Path, default=None, help="default: PS3RECOMP_DIR or ./ps3recomp")
+    args = parser.parse_args()
+    raw = eboot_bytes(args.eboot, va, size, f"the {name} policy module")
+    if fnv1a64(raw) != fingerprint:
+        raise SystemExit(f"the {name} policy module's fingerprint differs: "
+                         f"not the BCUS98176 01.00 EBOOT these addresses are for?")
+    if args.check:
+        check_image(args.dest, raw, name, f"prepare_r3_{name}.py")
+        print(f"R3 {name}: {size} bytes, FNV {fingerprint:016X}, OK")
+        return
+    n = lift_raw(raw, args.dest, 0xA00, f"r3_{name}_", args.toolkit)
+    print(f"R3 {name} ready: {size} bytes, FNV {fingerprint:016X}, {n} functions -> {args.dest}")

@@ -1,0 +1,21 @@
+{
+  "elf": "EBOOT.elf (Resistance 3 BCUS98176 01.00, RPCS3 PPU-502feb23...)",
+  "source": "RPCS3 patch.yml, \"Unlock FPS\" (Whatcookie, boma)",
+  "generated_by": "tools/r3_survey.py --write-insn",
+  "patches": [
+    {
+      "addr": "0x007EEAC8",
+      "orig": "0xC03F0004",
+      "new": "0xC0228DCC",
+      "guard": "g_res_unlock_fps",
+      "note": "lfs r/f1,-0x7234(r2) -> 0x00F02AD4"
+    },
+    {
+      "addr": "0x00736C44",
+      "orig": "0x4181FFC8",
+      "new": "0x60000000",
+      "guard": "g_res_unlock_fps",
+      "note": "nop"
+    }
+  ]
+}

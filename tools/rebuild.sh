@@ -35,12 +35,23 @@
 # port/spu/*/spu_recomp.*) is game-derived and .gitignore'd.
 # Environment: see tools/env.sh (RES_TITLE_ID, RES_EBOOT_BIN, PS3_VFS_ROOT,
 # PS3RECOMP_DIR, PY), RPCS3, JOBS, PS3_KEYS.
+#
+# JOBS: parallel lifter processes and compiles. Without it the build runs one
+# compile per 10 GB of RAM (at least 1), at low priority: each of the 24 lift
+# chunks is ~200 MB of C++ that takes several GB to compile, and Ninja's
+# default (one per core, plus two) swapped a 24 GB Mac until it froze.
 set -e
 here=${0:A:h}; source "$here/env.sh"
 AN=$RES_ROOT/analysis/$RES_TITLE_ID
 RC=$RES_ROOT/recompiled/$RES_TITLE_ID
 if (( $# )); then steps=("$@"); else steps=(toolkit decrypt survey analyse lift spu build); fi
 jobs=(); [ -n "$JOBS" ] && jobs=(-j "$JOBS")
+build_jobs=$JOBS
+if [ -z "$build_jobs" ]; then
+    mem=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+    build_jobs=$(( mem / (10 * 1024 * 1024 * 1024) ))
+    (( build_jobs < 1 )) && build_jobs=1
+fi
 
 say() { print -P "%B==> $*%b"; }
 
@@ -121,7 +132,8 @@ for s in $steps; do
               -DPS3RECOMP_DIR="$TK" -DRECOMP_DIR="$RC" -DR3_EBOOT="$E" -DRES_TITLE_ID="$RES_TITLE_ID" \
               -DPORT_SPU_INPUTS="$(res_spu_inputs)" -DPython3_EXECUTABLE="$PY" \
               -DPS3RECOMP_FFMPEG_RUNTIME=ON -DPS3RECOMP_FFMPEG_INCLUDE_DIR="${bp:-/opt/homebrew}/include"
-        cmake --build "$RES_BUILD/$RES_TITLE_ID" "${jobs[@]}" ;;
+        echo "    $build_jobs compile(s) at a time (JOBS to change)"
+        nice -n 10 cmake --build "$RES_BUILD/$RES_TITLE_ID" -j "$build_jobs" ;;
     *)
         echo "unknown step '$s' (toolkit decrypt survey analyse lift spu build)" >&2; exit 2 ;;
     esac

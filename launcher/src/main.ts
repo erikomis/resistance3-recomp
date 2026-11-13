@@ -220,6 +220,7 @@ function showView(view: string, tab?: string) {
   if (view === "game") {
     refreshDisc();
     refreshSaves();
+    refreshAudioOutputs();
   }
   showControls(view === "controls");
   if (view === "advanced") showTab(tab ?? advancedTab);
@@ -425,6 +426,23 @@ function fillScreens() {
   sel.value = cur;
 }
 
+// ---- sound outputs (PS3_AUDIO_DEVICE) ---------------------------------------------
+let audioOutputs: string[] = [];
+async function refreshAudioOutputs() {
+  audioOutputs = await invoke<string[]>("list_audio_outputs").catch(() => []);
+  fillAudioOutputs();
+}
+/** The system's default output, the ones the Mac has now, and the saved one
+ * when it is not connected. */
+function fillAudioOutputs() {
+  const sel = $<HTMLSelectElement>("audio-device");
+  sel.replaceChildren(new Option(t("settings.audioDeviceDefault"), ""));
+  for (const n of audioOutputs) sel.append(new Option(n, n));
+  const cur = settings.audioDevice;
+  if (cur && !audioOutputs.includes(cur)) sel.append(new Option(t("settings.screenMissing", { name: cur }), cur));
+  sel.value = cur;
+}
+
 // ---- what the build supports ------------------------------------------------------
 /** Sections whose feature the build lacks say so ("rebuild"). */
 function renderFeatures() {
@@ -533,7 +551,7 @@ function bindSettings() {
   bindText("ffmpeg-avutil", "ffmpegAvutil");
   bindText("play-dir", "playDir", () => refreshStatus());
   bindText("extra-env", "extraEnv");
-  bindText("audio-device", "audioDevice");
+  bindSelect("audio-device", "audioDevice");
   syncers.push(syncPreset);
   syncPreset();
   $("preset").addEventListener("change", () => {
@@ -689,6 +707,7 @@ function applyLang(l: Lang) {
   renderControls();
   renderMods();
   fillScreens();
+  fillAudioOutputs();
   renderFeatures();
   renderSaves();
   renderReport();

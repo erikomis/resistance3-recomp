@@ -72,6 +72,19 @@ worked on.
   #757 (branch bits read at run time) was reverted too: it changes every
   vertex program's translation, so a player's whole shader cache went stale
   and recompiled during play (127 builds queued, 8-20 fps, freezes).
+- Checkpoint/reload stalls of 6-24 s: the FIFO walker, a frame behind,
+  jumped into chained lists the game had already reclaimed, derailed, and
+  its resync dropped the label the game's end-of-frame wait polls (2 x 2.5 s
+  timeout). A shadow fetch now follows put promptly and copies each list
+  entered by a JUMP, so the walker reads the copy (`GCM_SHADOW_FETCH`); a
+  resync replays the label/reference/report writes on the real path
+  (`GCM_RESYNC_REPLAY`); the pass budget counts words (`GCM_FIFO_BUDGET_WORDS`).
+  9-minute run: no derail, no freeze.
+- Pipelines the game has built are recorded (`pipelines.rec` in the shader
+  cache) and rebuilt at boot in the background (`PS3_PIPELINE_RECORD`,
+  `PS3_PIPELINE_PREWARM`): second session, 1878 requests served ready,
+  in-game builds 663 -> 124. The MTLBinaryArchive half (`PS3_PIPELINE_ARCHIVE`)
+  is off until its saves work. `PS3_FS_TIMING=<s>` times file calls.
 - RSX thread in Haven combat: 45 -> 18 ms a frame, GPU flush waits 11 ->
   0.2 ms a frame, frame median 30.0 fps and the worst frame 60 ms (it was
   314). The Metal backend's texture-view table (256) filled in combat and a

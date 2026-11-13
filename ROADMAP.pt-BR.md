@@ -75,6 +75,11 @@ sendo trabalhado.
   tradução de todo programa de vértice, então o cache de shaders inteiro do
   jogador ficava velho e recompilava durante o jogo (127 compilações na fila,
   8-20 fps, congelamentos).
+- Travadas de shader em áreas novas: toda montagem de pipeline feita na hora
+  é cobrada do orçamento de compilação (funções e estado do pipeline), não só
+  as funções vindas do disco (`PS3_SHADER_SYNC_BUDGET_ALL`, ligado). Com o
+  cache de shaders vazio na mesma luta, a pior passada do RSX caiu de 3,07 s
+  para 198 ms.
 - Manchas pretas no chão de Haven: os decalques se iluminam a partir de
   render targets de 16x16; com a tabela cheia eles eram descartados sem o
   conteúdo e o decalque multiplicava por zero. Alvos pequenos agora são

@@ -72,6 +72,10 @@ worked on.
   #757 (branch bits read at run time) was reverted too: it changes every
   vertex program's translation, so a player's whole shader cache went stale
   and recompiled during play (127 builds queued, 8-20 fps, freezes).
+- Shader stalls in new areas: every pipeline built at once is charged to
+  the compile budget (functions and pipeline state), not only disk-cache
+  functions (`PS3_SHADER_SYNC_BUDGET_ALL`, on). With an empty shader cache
+  in the same fight the worst RSX pass went from 3.07 s to 198 ms.
 - Black patches on the ground in Haven: decals light themselves from 16x16
   render targets; when the target table filled, those were evicted without
   their content and the decals multiplied by zero. Small targets are now

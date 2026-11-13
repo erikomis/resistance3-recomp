@@ -55098,10 +55098,10 @@ index 4f658c1..77ac8f1
  sys.stdout.write("\n".join(out) + "\n")
 diff --git a/tools/host_window/host_display.h b/tools/host_window/host_display.h
 new file mode 100644
-index 0000000..9288d91
+index 0000000..52d06b5
 --- /dev/null
 +++ b/tools/host_window/host_display.h
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,123 @@
 +/*
 + * ps3recomp - the window host's display options (host_window.m)
 + *
@@ -55122,6 +55122,14 @@ index 0000000..9288d91
 + *                    (fitted to the game's aspect) and each frame goes
 + *                    through a MetalFX spatial scaler to it; off when
 + *                    MetalFX is missing or fails (one log line)
++ *   PS3_DOWNSCALE=0  a game picture larger than the window (an internal
++ *                    resolution above the screen's) goes to the window as
++ *                    it is and the layer shrinks it, sampling, so most of
++ *                    the extra pixels are lost and edges still shimmer. By
++ *                    default the drawable takes the window's pixel size and
++ *                    each frame is reduced into it with a Lanczos filter
++ *                    (MetalPerformanceShaders), every source pixel counted:
++ *                    supersampling. Off when MPS is missing (one log line)
 + *
 + * The picture always keeps its aspect ratio (black bars). Plain C, so the
 + * parsing and the fitting are tested on their own (test_host_display.c).
@@ -55160,6 +55168,16 @@ index 0000000..9288d91
 +    return 0;
 +}
 +
++/* 1 = reduce a picture larger than the window (PS3_DOWNSCALE, default on). */
++static inline int hd_downscale_from(const char* e)
++{
++    if (!e || !*e) return 1;
++    if (!strcasecmp(e, "off") || !strcmp(e, "0")) return 0;
++    if (!strcasecmp(e, "lanczos") || !strcmp(e, "1")) return 1;
++    fprintf(stderr, "[host window] PS3_DOWNSCALE=%s unknown (0, lanczos); on\n", e);
++    return 1;
++}
++
 +/* "<w>x<h>" with both sides in range: 1, else 0 and *w, *h untouched. */
 +static inline int hd_size_from(const char* e, unsigned* w, unsigned* h)
 +{
@@ -55184,6 +55202,20 @@ index 0000000..9288d91
 +    if (fw > sw && fh > sh) { *ow = (unsigned)fw; *oh = (unsigned)fh; }
 +}
 +
++/* The largest w:h size (sw:sh) that fits in pw x ph pixels, smaller than
++ * sw x sh or not: *ow x *oh, else sw x sh when there is no area. */
++static inline void hd_fit_any(double pw, double ph, unsigned sw, unsigned sh, unsigned* ow, unsigned* oh)
++{
++    *ow = sw; *oh = sh;
++    if (!(pw >= 1) || !(ph >= 1) || !sw || !sh) return;
++    double fw = floor(pw), fh = floor(ph);
++    if (fw * sh > fh * sw) fw = floor(fh * sw / sh + 0.5);
++    else                   fh = floor(fw * sh / sw + 0.5);
++    if (fw < 1) fw = 1;
++    if (fh < 1) fh = 1;
++    *ow = (unsigned)fw; *oh = (unsigned)fh;
++}
++
 +/* The content size that fits in a screen area of aw x ah, keeping w:h. */
 +static inline void hd_shrink_to(double aw, double ah, double* w, double* h)
 +{
@@ -55195,10 +55227,10 @@ index 0000000..9288d91
 +#endif /* PS3RECOMP_HOST_DISPLAY_H */
 diff --git a/tools/host_window/host_window.m b/tools/host_window/host_window.m
 new file mode 100644
-index 0000000..ee3d300
+index 0000000..756d388
 --- /dev/null
 +++ b/tools/host_window/host_window.m
-@@ -0,0 +1,878 @@
+@@ -0,0 +1,944 @@
 +/*
 + * ps3recomp - host window: one window across an executable swap (macOS)
 + *
@@ -55227,8 +55259,8 @@ index 0000000..ee3d300
 + *
 + * Environment:
 + *   PS3_TITLE              window title (default: HOST_WINDOW_TITLE, built in)
-+ *   PS3_WINDOW_MODE, PS3_WINDOW_SIZE, PS3_DISPLAY, PS3_VSYNC, PS3_UPSCALE
-+ *                          how the window opens and presents (host_display.h)
++ *   PS3_WINDOW_MODE, PS3_WINDOW_SIZE, PS3_DISPLAY, PS3_VSYNC, PS3_UPSCALE,
++ *   PS3_DOWNSCALE          how the window opens and presents (host_display.h)
 + *   PS3RECOMP_METAL_FPS=1  FPS in the title and [RSX FPS] lines, as the backend's
 + *                          own window does; guest FPS comes from the game.
 + *                          A line ends in hidden=1 while the window is off
@@ -55257,6 +55289,10 @@ index 0000000..ee3d300
 +#endif
 +
 +#include <dlfcn.h>
++#if __has_include(<MetalPerformanceShaders/MetalPerformanceShaders.h>)
++#  import <MetalPerformanceShaders/MetalPerformanceShaders.h>
++#  define HOST_HAVE_MPS 1
++#endif
 +
 +#include <errno.h>
 +#include <mach/mach.h>
@@ -55311,6 +55347,9 @@ index 0000000..ee3d300
 +    int                  upscale_on;       /* PS3_UPSCALE=metalfx, still working */
 +    id                   fx_scaler;        /* id<MTLFXSpatialScaler> */
 +    id<MTLTexture>       fx_out;
++    int                  down_on;          /* PS3_DOWNSCALE: Lanczos into a smaller window */
++    id                   ds_kernel;        /* MPSImageLanczosScale */
++    id<MTLTexture>       ds_out;
 +    /* the game */
 +    pid_t                child;
 +    int                  closing;
@@ -55486,15 +55525,19 @@ index 0000000..ee3d300
 +}
 +
 +/* The drawable's size: the surfaces' (the layer letterboxes them to the
-+ * window), or with PS3_UPSCALE the view's pixel size fitted to their aspect. */
++ * window); with PS3_UPSCALE the view's pixel size fitted to their aspect when
++ * that is larger, and with PS3_DOWNSCALE when it is smaller. */
 +static void keep_drawable(void)
 +{
 +    if (!g.layer || !g.width || !g.height) return;
 +    unsigned w = g.width, h = g.height;
-+    if (g.upscale_on && g.window) {
++    if ((g.upscale_on || g.down_on) && g.window) {
 +        NSView* v = g.window.contentView;
 +        const NSSize px = v ? [v convertSizeToBacking:v.bounds.size] : NSZeroSize;
-+        hd_fit(px.width, px.height, g.width, g.height, &w, &h);
++        unsigned fw, fh;
++        hd_fit_any(px.width, px.height, g.width, g.height, &fw, &fh);
++        if (g.upscale_on && fw > g.width && fh > g.height) { w = fw; h = fh; }
++        if (g.down_on && fw < g.width && fh < g.height) { w = fw; h = fh; }
 +    }
 +    const CGSize want = CGSizeMake(w, h);
 +    if (!CGSizeEqualToSize(g.layer.drawableSize, want)) g.layer.drawableSize = want;
@@ -55509,6 +55552,55 @@ index 0000000..ee3d300
 +    fprintf(stderr, "[host window] MetalFX upscaling unavailable (%s); presenting at %ux%u\n",
 +            why, g.width, g.height);
 +    keep_drawable();
++}
++
++/* Lanczos gave up: say why once and present at the surfaces' size. */
++static void downscale_fail(const char* why)
++{
++    if (!g.down_on) return;
++    g.down_on = 0;
++    g.ds_kernel = nil; g.ds_out = nil;
++    fprintf(stderr, "[host window] supersampling downscale unavailable (%s); the layer shrinks the picture\n", why);
++    keep_drawable();
++}
++
++/* src reduced with a Lanczos filter (MPSImageLanczosScale) into a private
++ * texture of ow x oh: every source pixel is weighed into the result, which
++ * is what turns an internal resolution above the window's into
++ * supersampling. nil when it cannot. MPS is looked up when first needed. */
++static id<MTLTexture> downscale(id<MTLCommandBuffer> cb, id<MTLTexture> src, NSUInteger ow, NSUInteger oh)
++{
++#if HOST_HAVE_MPS
++    static Class lanczos;
++    if (!lanczos) {
++        dlopen("/System/Library/Frameworks/MetalPerformanceShaders.framework/MetalPerformanceShaders",
++               RTLD_LAZY | RTLD_LOCAL);
++        lanczos = NSClassFromString(@"MPSImageLanczosScale");
++        if (!lanczos) { downscale_fail("MetalPerformanceShaders is not on this system"); return nil; }
++    }
++    if (!g.ds_kernel) {
++        g.ds_kernel = [[lanczos alloc] initWithDevice:g.dev];
++        if (!g.ds_kernel) { downscale_fail("not supported on this GPU"); return nil; }
++    }
++    if (!g.ds_out || g.ds_out.width != ow || g.ds_out.height != oh || g.ds_out.pixelFormat != src.pixelFormat) {
++        MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat
++                                                                                      width:ow height:oh
++                                                                                  mipmapped:NO];
++        td.usage       = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
++        td.storageMode = MTLStorageModePrivate;
++        g.ds_out = [g.dev newTextureWithDescriptor:td];
++        if (!g.ds_out) { downscale_fail("no memory for its output"); return nil; }
++        fprintf(stderr, "[host window] supersampling: %lux%lu reduced to %lux%lu (Lanczos)\n",
++                (unsigned long)src.width, (unsigned long)src.height, (unsigned long)ow, (unsigned long)oh);
++    }
++    if (!(src.usage & MTLTextureUsageShaderRead)) { downscale_fail("the surfaces cannot be read by a shader"); return nil; }
++    [(MPSImageLanczosScale*)g.ds_kernel encodeToCommandBuffer:cb sourceTexture:src destinationTexture:g.ds_out];
++    return g.ds_out;
++#else
++    (void)cb; (void)src; (void)ow; (void)oh;
++    downscale_fail("built without MetalPerformanceShaders");
++    return nil;
++#endif
 +}
 +
 +/* src through a MetalFX spatial scaler into a private texture of ow x oh;
@@ -55589,12 +55681,17 @@ index 0000000..ee3d300
 +        const int same  = src.width == (NSUInteger)ds.width && src.height == (NSUInteger)ds.height;
 +        const int scale = !same && g.upscale_on &&
 +                          (NSUInteger)ds.width > src.width && (NSUInteger)ds.height > src.height;
-+        if (same || scale) drawable = [g.layer nextDrawable];
++        const int down  = !same && g.down_on &&
++                          (NSUInteger)ds.width < src.width && (NSUInteger)ds.height < src.height;
++        if (same || scale || down) drawable = [g.layer nextDrawable];
 +        id<MTLCommandBuffer> cb = drawable ? [g.queue commandBuffer] : nil;
 +        id<MTLTexture> from = src;
 +        if (cb && scale) {
 +            from = upscale(cb, src, (NSUInteger)ds.width, (NSUInteger)ds.height);
 +            if (!from) cb = nil;                /* MetalFX is off now: plain next time */
++        } else if (cb && down) {
++            from = downscale(cb, src, (NSUInteger)ds.width, (NSUInteger)ds.height);
++            if (!from) cb = nil;                /* the reduction is off now: plain next time */
 +        }
 +        if (!cb) {                              /* no drawable now: show it next time */
 +            uint32_t s = RSX_HOST_READING;
@@ -56008,6 +56105,7 @@ index 0000000..ee3d300
 +        const int mode = hd_window_mode_from(getenv("PS3_WINDOW_MODE"));
 +        g.fs_style = mode == HD_BORDERLESS ? HD_BORDERLESS : HD_FULLSCREEN;
 +        g.upscale_on = hd_upscale_from(getenv("PS3_UPSCALE"));
++        g.down_on = hd_downscale_from(getenv("PS3_DOWNSCALE"));
 +        make_window(w, h, pick_screen(), hd_vsync_from(getenv("PS3_VSYNC")));
 +        g.window.delegate = delegate;
 +        if (make_surfaces(w, h) != 0) {
@@ -56131,6 +56229,108 @@ index 0000000..95df325
 +    cw = 1280; ch = 720;
 +    hd_shrink_to(1512, 945, &cw, &ch); assert(cw == 1280 && ch == 720);
 +    printf("test_host_display: ok\n");
++    return 0;
++}
+diff --git a/tools/host_window/test_host_window_downscale.m b/tools/host_window/test_host_window_downscale.m
+new file mode 100644
+index 0000000..90fc132
+--- /dev/null
++++ b/tools/host_window/test_host_window_downscale.m
+@@ -0,0 +1,96 @@
++/* The window host's supersampling path (PS3_DOWNSCALE, host_window.m) with no
++ * window: a picture three times the window's size reduced through
++ * downscale(). A one-pixel checkerboard -- the finest detail a picture holds,
++ * the kind that shimmers on edges -- must come out as an even grey, every
++ * source pixel weighed in; a layer that samples instead (one source pixel per
++ * window pixel) shows black or white. Same sizes reuse the output; a source a
++ * shader may not read turns the path off.
++ *
++ *   clang -fobjc-arc -I libs/video tools/host_window/test_host_window_downscale.m \
++ *         -framework AppKit -framework Metal -framework QuartzCore -framework IOSurface \
++ *         -o /tmp/test_host_window_downscale && /tmp/test_host_window_downscale
++ */
++#define main host_window_main
++#include "host_window.m"
++#undef main
++#include <assert.h>
++
++static id<MTLTexture> checker(NSUInteger w, NSUInteger h, MTLTextureUsage usage)
++{
++    MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
++                                                                                  width:w height:h mipmapped:NO];
++    td.usage = usage;
++    td.storageMode = MTLStorageModeShared;
++    id<MTLTexture> t = [g.dev newTextureWithDescriptor:td];
++    uint8_t* px = malloc(w * h * 4);
++    for (NSUInteger y = 0; y < h; y++)
++        for (NSUInteger x = 0; x < w; x++) {
++            uint8_t* p = px + (y * w + x) * 4;
++            const uint8_t v = ((x ^ y) & 1) ? 255 : 0;
++            p[0] = p[1] = p[2] = v; p[3] = 255;
++        }
++    [t replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:px bytesPerRow:w * 4];
++    free(px);
++    return t;
++}
++
++int main(void)
++{
++    @autoreleasepool {
++        g.dev = MTLCreateSystemDefaultDevice();
++        if (!g.dev) { printf("test_host_window_downscale: no Metal device, skipped\n"); return 0; }
++        g.queue = [g.dev newCommandQueue];
++        g.layer = [CAMetalLayer layer];
++        g.width = 192; g.height = 108;
++        g.down_on = hd_downscale_from(NULL);
++        assert(g.down_on);
++
++        /* no window: the drawable stays the surfaces' size */
++        keep_drawable();
++        assert(g.layer.drawableSize.width == 192 && g.layer.drawableSize.height == 108);
++
++        id<MTLTexture> src = checker(192, 108, MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget);
++        id<MTLCommandBuffer> cb = [g.queue commandBuffer];
++        id<MTLTexture> out = downscale(cb, src, 64, 36);
++        if (!out) {
++            assert(!g.down_on);
++            printf("test_host_window_downscale: MetalPerformanceShaders not available here, fallback checked\n");
++            return 0;
++        }
++        assert(out.width == 64 && out.height == 36 && out.storageMode == MTLStorageModePrivate);
++        id<MTLTexture> back = checker(64, 36, MTLTextureUsageShaderRead);
++        id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
++        [b copyFromTexture:out toTexture:back];
++        [b endEncoding];
++        [cb commit];
++        [cb waitUntilCompleted];
++        assert(cb.status == MTLCommandBufferStatusCompleted);
++        uint8_t* px = malloc(64 * 36 * 4);
++        [back getBytes:px bytesPerRow:64 * 4 fromRegion:MTLRegionMake2D(0, 0, 64, 36) mipmapLevel:0];
++        int lo = 255, hi = 0;
++        for (int y = 4; y < 32; y++)            /* away from the edges' clamping */
++            for (int x = 4; x < 60; x++) {
++                const int v = px[(y * 64 + x) * 4 + 1];
++                if (v < lo) lo = v;
++                if (v > hi) hi = v;
++            }
++        free(px);
++        printf("test_host_window_downscale: checkerboard 192x108 -> 64x36 gives %d..%d\n", lo, hi);
++        assert(lo > 80 && hi < 175);            /* grey, not black or white pixels */
++
++        /* the same sizes reuse the output */
++        id<MTLTexture> again = out;
++        cb = [g.queue commandBuffer];
++        assert(downscale(cb, src, 64, 36) == again);
++        [cb commit]; [cb waitUntilCompleted];
++
++        /* a source a shader may not read: it gives up, presents plain */
++        id<MTLTexture> bad = checker(192, 108, MTLTextureUsageRenderTarget);
++        cb = [g.queue commandBuffer];
++        assert(downscale(cb, bad, 64, 36) == nil);
++        assert(!g.down_on && g.ds_kernel == nil);
++        assert(g.layer.drawableSize.width == 192 && g.layer.drawableSize.height == 108);
++        printf("test_host_window_downscale: ok\n");
++    }
 +    return 0;
 +}
 diff --git a/tools/host_window/test_host_window_offscreen.m b/tools/host_window/test_host_window_offscreen.m

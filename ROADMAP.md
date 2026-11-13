@@ -79,12 +79,17 @@ worked on.
   entered by a JUMP, so the walker reads the copy (`GCM_SHADOW_FETCH`); a
   resync replays the label/reference/report writes on the real path
   (`GCM_RESYNC_REPLAY`); the pass budget counts words (`GCM_FIFO_BUDGET_WORDS`).
-  9-minute run: no derail, no freeze.
+  9-minute run: no derail, no freeze. (The shadow first matched list
+  copies by address and could replay last frame's copy, which stalled boot
+  at the Insomniac logo; copies are matched by order now: 8 of 8 clean
+  boots.)
 - Pipelines the game has built are recorded (`pipelines.rec` in the shader
   cache) and rebuilt at boot in the background (`PS3_PIPELINE_RECORD`,
   `PS3_PIPELINE_PREWARM`): second session, 1878 requests served ready,
-  in-game builds 663 -> 124. The MTLBinaryArchive half (`PS3_PIPELINE_ARCHIVE`)
-  is off until its saves work. `PS3_FS_TIMING=<s>` times file calls.
+  in-game builds 663 -> 124. Their compiled binaries are kept in
+  MTLBinaryArchive chunks written once each (`PS3_PIPELINE_ARCHIVE`, on;
+  merged past 6 chunks, capped at 192 MB): next session 781 of 781 loaded
+  from the archive, no recompiles even if macOS drops its own cache. `PS3_FS_TIMING=<s>` times file calls.
 - RSX thread in Haven combat: 45 -> 18 ms a frame, GPU flush waits 11 ->
   0.2 ms a frame, frame median 30.0 fps and the worst frame 60 ms (it was
   314). The Metal backend's texture-view table (256) filled in combat and a

@@ -9711,7 +9711,7 @@ index 0000000..eddf0bf
 +    return 0;
 +}
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index efad9b9..c0cdfd5 100644
+index efad9b9..381758d 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
 @@ -10,6 +10,7 @@
@@ -10228,7 +10228,7 @@ index efad9b9..c0cdfd5 100644
  /* Global fence-publication counter: lets the lwmutex convoy trace correlate a
   * long lock hold with the number of paced fence publications inside it (the
   * 200us pacing x hundreds of one-ahead fences = the ~156ms holds). */
-@@ -1703,14 +2065,433 @@ void cellGcm_ref_on_poll(void)
+@@ -1703,14 +2065,458 @@ void cellGcm_ref_on_poll(void)
          SetEvent(s_gcm_kick_ev);       /* dry: ask the present thread to walk */
  }
  
@@ -10294,8 +10294,15 @@ index efad9b9..c0cdfd5 100644
 +static _Atomic u32 s_sl_tail;
 +static u32 s_sl_head;                 /* the walker's */
 +/* The walker's side: the list it is reading from the copy. */
-+static int s_rd_on;
-+static u32 s_rd_start, s_rd_avail, s_rd_seq, s_rd_min_seq = 1u;
++/* s_rd_seq is the list the WALKER is in, counted the way the shadow counts
++ * them (one per JUMP taken), whether or not it has a copy; s_rd_known says the
++ * count can be trusted. The two take the same JUMPs in the same order, so the
++ * walker's next list is always s_rd_seq + 1 -- matching a list by its address
++ * is not enough, because the title reuses the same two addresses every other
++ * frame and an older copy of "the list at 0x10B00" is exactly the wrong one. */
++static int s_rd_on, s_rd_known;
++static u32 s_rd_start, s_rd_avail, s_rd_seq;
++static u32 s_sh_put;                  /* the put the shadow last walked to */
 +
 +static int gcm_sh_on(void)
 +{
@@ -10355,10 +10362,24 @@ index efad9b9..c0cdfd5 100644
 +    atomic_store(&s_sl_tail, t + 1u);
 +}
 +
-+/* Walk the shadow to `put`. Decodes exactly what the walker's loop treats as
-+ * control flow, in the same order. Caller holds s_sh_lock. */
-+static void gcm_sh_advance(u32 put)
++/* Walk the shadow to put. Decodes exactly what the walker's loop treats as
++ * control flow, in the same order. Caller holds s_sh_lock.
++ *
++ * To the put in the register NOW, never to one a caller read earlier. The
++ * walker reads put at the top of its pass and gets here microseconds later;
++ * if the watcher has already followed a newer put, walking "to" the old one
++ * meant walking on from the new list's end -- over the stale JUMP standing
++ * there, into last round's copy of the other list -- and filing that as a
++ * fetched list. The walker then executed it: Resistance 3's frame label came
++ * back with the previous round's value (SEMA-REL 3, 5, 3 at boot instead of
++ * 3, 5, 7), its end-of-frame wait ran out both 2.5 s timeouts, and when the
++ * stale copy stayed one round behind every frame did (boot111: 200 s on the
++ * logo at one frame per 5 s). */
++static void gcm_sh_advance(void)
 +{
++    const u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
++    atomic_thread_fence(memory_order_acquire);   /* commands, fence, then put */
++    s_sh_put = put;
 +    if (!s_sh_valid) return;
 +    int budget = 1 << 18;
 +    while (s_sh_pos != put && budget-- > 0) {
@@ -10439,32 +10460,34 @@ index efad9b9..c0cdfd5 100644
 +    }
 +}
 +
-+/* Before the walker reads: the shadow is at `put`, the copy is current. */
-+static void gcm_sh_sync(u32 put)
++/* Before the walker reads: the shadow is at (or past) the put the walker has
++ * seen, and the copy is current. */
++static void gcm_sh_sync(void)
 +{
 +    if (!gcm_sh_on()) return;
 +    AcquireSRWLockExclusive(&s_sh_lock);
-+    gcm_sh_advance(put);
++    gcm_sh_advance();
 +    gcm_rd_refresh();
 +    ReleaseSRWLockExclusive(&s_sh_lock);
 +}
 +
-+/* The walker took a JUMP to `tgt`: read that list from its copy, if the
-+ * shadow kept one. Lists are entered in the order the shadow met them. */
++/* The walker took a JUMP to `tgt`: it is in the shadow's next list. Read it
++ * from the copy if there is one; if the list there is not the one the walker
++ * jumped to, the two have parted and the walker reads in place until it next
++ * rests (gcm_sh_walker_idle). */
 +static void gcm_rd_enter(u32 tgt)
 +{
 +    if (!gcm_sh_on()) return;
 +    AcquireSRWLockExclusive(&s_sh_lock);
 +    s_rd_on = 0;
-+    u32 lo = s_sh_nrec >= GCM_SH_RECS ? s_sh_nrec - GCM_SH_RECS + 1u : 1u;
-+    if (lo < s_rd_min_seq) lo = s_rd_min_seq;
-+    for (u32 q = lo; q <= s_sh_nrec; q++) {
-+        const gcm_sh_rec* r = gcm_sh_lookup(q);
-+        if (!r || r->dead || r->start != tgt) continue;
-+        s_rd_on = 1; s_rd_seq = q; s_rd_start = tgt; s_rd_avail = 0;
-+        s_rd_min_seq = q + 1u;
-+        gcm_rd_refresh();
-+        break;
++    if (s_rd_known) {
++        const gcm_sh_rec* r = gcm_sh_lookup(s_rd_seq + 1u);
++        if (r && r->start == tgt) {
++            s_rd_seq++;
++            if (!r->dead) { s_rd_on = 1; s_rd_start = tgt; s_rd_avail = 0; gcm_rd_refresh(); }
++        } else {
++            s_rd_known = 0;
++        }
 +    }
 +    ReleaseSRWLockExclusive(&s_sh_lock);
 +}
@@ -10494,18 +10517,25 @@ index efad9b9..c0cdfd5 100644
 +    }
 +}
 +
-+/* The walker rests at put: whatever the shadow logged, it has done; and a
-+ * shadow that is not there too has lost the path, so start it again here. */
++/* The walker rests at put. If that is still the put in the register, the
++ * shadow belongs here too: whatever it logged the walker has done, the list it
++ * is in is the walker's, and a shadow that is somewhere else has lost the path
++ * and starts again from here. If put has moved on, the shadow is ahead and
++ * there is nothing to settle yet. */
 +static void gcm_sh_walker_idle(u32 put, u32 calloff)
 +{
 +    if (!gcm_sh_on()) return;
 +    AcquireSRWLockExclusive(&s_sh_lock);
-+    gcm_sh_advance(put);
-+    if (!s_sh_valid || s_sh_pos != put) {
-+        s_sh_valid = 1; s_sh_pos = put; s_sh_call = calloff; s_sh_cur = 0;
-+        s_rd_min_seq = s_sh_nrec + 1u;
++    gcm_sh_advance();
++    if (s_sh_put == put) {
++        if (!s_sh_valid || s_sh_pos != put) {
++            s_sh_valid = 1; s_sh_pos = put; s_sh_call = calloff; s_sh_cur = 0;
++        }
++        if (!s_rd_known || s_rd_seq != s_sh_nrec) {
++            s_rd_on = 0; s_rd_known = 1; s_rd_seq = s_sh_nrec;
++        }
++        s_sl_head = atomic_load(&s_sl_tail);
 +    }
-+    s_sl_head = atomic_load(&s_sl_tail);
 +    gcm_rd_refresh();
 +    ReleaseSRWLockExclusive(&s_sh_lock);
 +}
@@ -10515,8 +10545,7 @@ index efad9b9..c0cdfd5 100644
 +{
 +    if (!gcm_sh_on()) return;
 +    AcquireSRWLockExclusive(&s_sh_lock);
-+    s_rd_on = 0;
-+    s_rd_min_seq = s_sh_nrec + 1u;
++    s_rd_on = 0; s_rd_known = 0;
 +    s_sh_valid = 0;                 /* revalidated at the walker's next rest */
 +    s_sl_head = atomic_load(&s_sl_tail);
 +    ReleaseSRWLockExclusive(&s_sh_lock);
@@ -10531,9 +10560,10 @@ index efad9b9..c0cdfd5 100644
 +    static int on = -1;
 +    if (on < 0) { const char* e = getenv("GCM_RESYNC_REPLAY"); on = !(e && e[0] == '0'); }
 +    if (!on || !gcm_sh_on()) return 0;
++    (void)put;
 +    AcquireSRWLockExclusive(&s_sh_lock);
-+    gcm_sh_advance(put);
-+    if (!s_sh_valid || s_sh_pos != put) { ReleaseSRWLockExclusive(&s_sh_lock); return 0; }
++    gcm_sh_advance();
++    if (!s_sh_valid || s_sh_pos != s_sh_put) { ReleaseSRWLockExclusive(&s_sh_lock); return 0; }
 +    /* Labels queued behind a report would land after -- and over -- these. */
 +    gcm_dq_pump(RSX_ZPASS_WAIT);
 +    const u32 tail = atomic_load(&s_sl_tail);
@@ -10589,12 +10619,7 @@ index efad9b9..c0cdfd5 100644
 +        if (!vm_base) continue;
 +        if (gcm_sh_on()) {
 +            AcquireSRWLockExclusive(&s_sh_lock);
-+            if (s_sh_valid) {
-+                const u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
-+                /* The title stores the commands, fences, then stores put. */
-+                atomic_thread_fence(memory_order_acquire);
-+                if (s_sh_pos != put) gcm_sh_advance(put);
-+            }
++            if (s_sh_valid) gcm_sh_advance();
 +            ReleaseSRWLockExclusive(&s_sh_lock);
 +        }
 +        if (!atomic_load(&s_idle_on) || atomic_load(&s_snap_valid)) continue;
@@ -10662,7 +10687,7 @@ index efad9b9..c0cdfd5 100644
      if (ft_t0) {
          const uint64_t t1 = ps3_ft_now();
          if (t1 - ft_t0 >= ps3_ft_min_ns())
-@@ -1726,12 +2507,16 @@ static int gcm_get_eq_put(void)
+@@ -1726,12 +2532,16 @@ static int gcm_get_eq_put(void)
      return eq;
  }
  
@@ -10680,7 +10705,7 @@ index efad9b9..c0cdfd5 100644
            unsigned long long now = ps3_ms_now();
            if (_t0 == 0) _t0 = now;
            if (now - _t0 >= 2000) {
-@@ -1751,6 +2536,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1751,6 +2561,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * by s_gcm_ctx_out_ea, which stays 0 on that path. */
      if (!s_gcm_context_ea && !s_gcm_syscall_mode) return;
      if (!s_inited) { rsx_state_init(&s_state); s_inited = 1; }
@@ -10689,7 +10714,7 @@ index efad9b9..c0cdfd5 100644
  
      /* Walk the FIFO exactly like the RSX: chase the guest-written `put` (an IO
       * offset in the control register), decoding method headers and following
-@@ -1760,6 +2547,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1760,6 +2572,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * own command ring, so everything after the jump (including the reference
       * writes its waits spin on) silently never executed. */
      u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
@@ -10697,7 +10722,7 @@ index efad9b9..c0cdfd5 100644
      /* The words behind `put` were stored by another thread (the title, or the
       * recycle below) before it stored `put`. On x86 the hardware keeps loads
       * in order; on arm64 it does not, so without an acquire here the ring
-@@ -1772,7 +2560,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1772,7 +2585,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * once at init; if the title repoints gCellGcmCurrentContext at a buffer of
       * its own, every field below moves with it and the FIFO the runtime walks
       * stops being the one the title fills. Reported on change, not per tick. */
@@ -10707,7 +10732,7 @@ index efad9b9..c0cdfd5 100644
          static u32 last_ptr = 0xFFFFFFFFu, last_cur = 0xFFFFFFFFu;
          u32 ptr = vm_read32(s_gcm_ctx_out_ea);
          u32 cur = ptr ? vm_read32(ptr + 0x8) : 0;
-@@ -1792,7 +2581,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1792,7 +2606,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
      static int s_drain_every = -1;
      if (s_drain_every < 0) { const char* e = getenv("GCM_DRAINDBG_EVERY");
                               s_drain_every = (e && atoi(e) > 0) ? atoi(e) : 60; }
@@ -10716,7 +10741,7 @@ index efad9b9..c0cdfd5 100644
          static int n = 0;
          if (n++ % s_drain_every == 0)
              printf("[DRAIN] getoff=%08X put=%08X ref=%08X ctx.current=%08X\n",
-@@ -1804,8 +2593,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1804,8 +2618,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * present in 0..put. "The title waits for a fence we never published" has
       * two very different causes -- we missed the command, or it was never
       * submitted -- and only a direct scan of the ring separates them. */
@@ -10727,7 +10752,7 @@ index efad9b9..c0cdfd5 100644
          unsigned found = 0;
          for (u32 io = 0; io + 8 <= put; io += 4) {
              u32 ea = gcm_io2ea(io); if (!ea) continue;
-@@ -1841,13 +2630,95 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1841,13 +2655,95 @@ static void gcm_rsx_process_fifo_unlocked(void)
            fflush(stderr);
        } }
  
@@ -10784,7 +10809,7 @@ index efad9b9..c0cdfd5 100644
 +     * does not work: the word at put is usually the previous frame's stale
 +     * JUMP, and the title re-points it legitimately.) GCM_PUT_WATCH=0 turns
 +     * the watcher off. */
-+    gcm_sh_sync(put);               /* the shadow fetch is at put; copies current */
++    gcm_sh_sync();                  /* the shadow fetch is at put; copies current */
 +    if (put != s_fifo_getoff) {     /* still resting: stay armed */
 +        const int was_idle = atomic_exchange(&s_idle_on, 0);
 +        if (was_idle && atomic_load(&s_snap_valid) &&
@@ -10818,14 +10843,14 @@ index efad9b9..c0cdfd5 100644
 +            put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
 +            atomic_thread_fence(memory_order_acquire);
 +            gcm_put_seen(s_fifo_getoff, put);
-+            if (put != put_was || s_rd_on) gcm_sh_sync(put);
++            if (put != put_was || s_rd_on) gcm_sh_sync();
 +            if (s_fifo_getoff == put) break;
 +        }
 +        u32 ea = gcm_fifo_ea(s_fifo_getoff);
          if (!ea) {
              /* get is sitting on an IO offset with no mapping -- the title
               * branched into a region and then unmapped it, or the offset was
-@@ -1865,6 +2736,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1865,6 +2761,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
                              "mapping -- resyncing to put=0x%08X\n",
                              s_fifo_getoff, put);
              }
@@ -10834,7 +10859,7 @@ index efad9b9..c0cdfd5 100644
              s_fifo_getoff = put;
              /* Whatever the walker had not reached is gone, and so are the flips
               * queued in it: none of them will ever be executed, so do not let a
-@@ -1874,6 +2747,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1874,6 +2772,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
              break;
          }
          u32 w = vm_read32(ea);
@@ -10842,7 +10867,7 @@ index efad9b9..c0cdfd5 100644
          /* Only remember offsets BELOW put -- those are positions in the
           * ring the title is writing. A park in another region is where the
           * walker gave up, not how far it got through the ring. */
-@@ -2015,6 +2889,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2015,6 +2914,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
                }
                if (tgt < s_fifo_getoff) s_fifo_back_jumps++;
                s_fifo_getoff = tgt;
@@ -10851,7 +10876,7 @@ index efad9b9..c0cdfd5 100644
                /* get is the RSX's fetch pointer: a title polling it sees the
                 * GPU leave a segment as soon as the JUMP out of it is taken.
                 * The end of the pass, where get is otherwise published, can
-@@ -2027,18 +2903,40 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2027,18 +2928,40 @@ static void gcm_rsx_process_fifo_unlocked(void)
              { u32 tgt = w & 0x1FFFFFFCu;
                if (!gcm_io2ea(tgt)) { gcm_fifo_bad_branch("CALL", tgt, w); gcm_fifo_resync_why("unmapped-CALL", &s_fifo_getoff, put); break; }
                s_fifo_calloff = s_fifo_getoff + 4;
@@ -10893,7 +10918,7 @@ index efad9b9..c0cdfd5 100644
              /* TCONST_FIFO=1: how the title actually streams vertex constants.
               * NV4097_SET_TRANSFORM_CONSTANT is a 32-register window; if a block
               * arrives NON-INCREMENTING then every dword carries the same method
-@@ -2073,18 +2971,36 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2073,18 +2996,36 @@ static void gcm_rsx_process_fifo_unlocked(void)
              if (subch == 0 && (method == 0x64u || method == 0x68u || method == 0x6Cu)) {
                  int sem_blocked = 0;
                  for (u32 i = 0; i < count; i++) {
@@ -10932,7 +10957,7 @@ index efad9b9..c0cdfd5 100644
                      if (m == 0x64u)      s_sema_offset = v;
                      else if (m == 0x6Cu) {
                          /* The RSX has fetched past a RELEASE before its
-@@ -2099,11 +3015,50 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2099,11 +3040,50 @@ static void gcm_rsx_process_fifo_unlocked(void)
                          if (!gcm_get_eq_put())
                              vm_write32(GCM_CONTROL_GUEST_ADDR + 4, s_fifo_getoff + 4 + count * 4);
                          atomic_thread_fence(memory_order_release);
@@ -10984,7 +11009,7 @@ index efad9b9..c0cdfd5 100644
              /* GCM_SEMA_ACQUIRE=1 makes ACQUIRE actually block, which is what
               * the hardware does. Off by default: a title whose label nothing
               * ever writes would wedge the drain permanently, and RELEASE on
-@@ -2118,29 +3073,120 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2118,29 +3098,120 @@ static void gcm_rsx_process_fifo_unlocked(void)
                   * <ms> on the same acquire it is consumed and said so. inFAMOUS 2
                   * acquires a label its SPU lighting writes each frame: waiting
                   * here is what orders the RSX's sampling after that write. */
@@ -11110,7 +11135,7 @@ index efad9b9..c0cdfd5 100644
                  /* GCM_SET_USER_COMMAND is method 0xEB00, which this decode
                   * splits into subchannel 7 / method 0x0B00 -- so it was landing
                   * in the 2D engine path and being dropped as unrecognised. It
-@@ -2287,15 +3333,23 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2287,15 +3358,23 @@ static void gcm_rsx_process_fifo_unlocked(void)
                  } else if (mfull == 0xE920u || mfull == 0xE924u) {
                      cellGcmSetFlipCommand(vm_read32(dea) & 7u);
                  } else if (subch == 0 || (subch == 1 && !s1_2d)) {
@@ -11139,7 +11164,7 @@ index efad9b9..c0cdfd5 100644
                      if (m == 0x1A8) s_report_dma = vm_read32(dea);
                      if (m == 0x1800) {
                          const u32 v = vm_read32(dea), off = v & 0xFFFFFFu, idx = off / 16u;
-@@ -2303,25 +3357,36 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2303,25 +3382,36 @@ static void gcm_rsx_process_fifo_unlocked(void)
                          const u64 ts = gcm_report_timestamp();
                          const int main_mem = s_report_dma == 0xFEED0001u || s_report_dma == 0xBAD68000u;
                          { static int rn = 0; if (PS3_LOG_FIRST(rn, 6)) printf("[GET_REPORT] type=%u off=0x%X dma=0x%08X%c", v >> 24, off, s_report_dma, 10); }
@@ -11187,7 +11212,7 @@ index efad9b9..c0cdfd5 100644
              continue;
          }
          { static int _uw = 0; if (PS3_LOG_FIRST(_uw, 16) && getenv("RTT_DUMP"))
-@@ -2329,6 +3394,22 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2329,6 +3419,22 @@ static void gcm_rsx_process_fifo_unlocked(void)
          s_fifo_getoff += 4;                    /* unknown word: skip */
      }
  
@@ -11210,7 +11235,7 @@ index efad9b9..c0cdfd5 100644
      /* Walker watchdog. Everything above recovers from a *recognised* stall --
       * a branch we cannot take, a park the title abandoned. A walker that stops
       * for any other reason simply freezes `get` for the rest of the run and
-@@ -2403,7 +3484,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2403,7 +3509,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * per tick (gcm_ref_push/gcm_ref_publish_one above) so every SET_REFERENCE
       * value stays observable to equality-waiters. The wrap recycle path polls
       * the drained EA. */
@@ -11219,7 +11244,7 @@ index efad9b9..c0cdfd5 100644
          static int n2 = 0;
          if (n2++ % s_drain_every == 0)
              fprintf(stderr, "[DRAINEND] %s: %08X -> %08X (%u bytes), put=%08X\n",
-@@ -2485,6 +3566,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2485,6 +3591,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
                  vm_write32(ctx + 0x8, begin);                 /* current = begin */
                  vm_write32(GCM_CONTROL_GUEST_ADDR + 0, io_begin);  /* put */
                  s_fifo_getoff = io_begin;                          /* get */
@@ -11227,7 +11252,7 @@ index efad9b9..c0cdfd5 100644
                  put = io_begin;
                  static int n = 0;
                  if (PS3_LOG_FIRST(n, 8))
-@@ -2504,6 +3586,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2504,6 +3611,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
       * If the overflow survives this, `get` is not what it consults. */
      vm_write32(GCM_CONTROL_GUEST_ADDR + 4, gcm_get_eq_put() ? put : s_fifo_getoff);
  
@@ -11236,7 +11261,7 @@ index efad9b9..c0cdfd5 100644
      AcquireSRWLockExclusive(&s_ref_pub_lock);                           /* ref */
      gcm_ref_publish_one();
      ReleaseSRWLockExclusive(&s_ref_pub_lock);
-@@ -2534,7 +3618,8 @@ void cellGcm_fifo_recycle(u32 ctx_ea)
+@@ -2534,7 +3643,8 @@ void cellGcm_fifo_recycle(u32 ctx_ea)
      u32 current = vm_read32(ctx_ea + 0x8);
      if (current <= begin) return;                       /* nothing to recycle */
  
@@ -11246,7 +11271,7 @@ index efad9b9..c0cdfd5 100644
          printf("[RECYCLE] ring wrap: current=0x%08X -> begin=0x%08X\n", current, begin);
  
      static int s_recdbg = -1;
-@@ -2714,7 +3799,7 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
+@@ -2714,7 +3824,7 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
            }
        } }
  
@@ -11255,7 +11280,7 @@ index efad9b9..c0cdfd5 100644
          fprintf(stderr, "[FLIP] SetFlipCommand(buf=%u) set=%d\n",
                  bufferId, bufferId < CELL_GCM_MAX_DISPLAY_BUFFER_NUM ? s_display_buffer_set[bufferId] : -1); }
      if (bufferId >= CELL_GCM_MAX_DISPLAY_BUFFER_NUM)
-@@ -3692,6 +4777,7 @@ void cellGcmTerminate(void)
+@@ -3692,6 +4802,7 @@ void cellGcmTerminate(void)
      memset(s_zcull, 0, sizeof(s_zcull));
      memset(s_report_data, 0, sizeof(s_report_data));
      s_report_dma = 0xFEED0000u;
@@ -18434,7 +18459,7 @@ index baba40f..f10654e 100644
  
  /* Present one frame: clear the drawable to the colour last received through the
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index 5b20d8a..f1f9085 100644
+index 5b20d8a..b1b0270 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
 @@ -56,6 +56,22 @@
@@ -20163,7 +20188,7 @@ index 5b20d8a..f1f9085 100644
  
      EngRecord* r = &s_eng_rec[s_eng_rec_count++];
      memset(r, 0, sizeof *r);
-@@ -2833,71 +4086,575 @@ static u32 eng_depth_snapshot(void* user, u32 depth, u32 w, u32 h)
+@@ -2833,71 +4086,576 @@ static u32 eng_depth_snapshot(void* user, u32 depth, u32 w, u32 h)
      return dst;
  }
  
@@ -20576,15 +20601,15 @@ index 5b20d8a..f1f9085 100644
          snprintf(name, sizeof name, "%s %016llx", what, (unsigned long long)hash);
 -        fn = compile_guest_function(s_msl, name);
 +        fn = compile_guest_function(msl, name);
-     }
--    s_eng_func[s_eng_func_count].hash = hash;
--    s_eng_func[s_eng_func_count].fn   = fn;
--    s_eng_func_count++;
++    }
 +    if (sb_t0) {
 +        const uint64_t sb_t2 = ps3_ft_now();
 +        s_sb.tr[si] += (double)(sb_t1 - sb_t0) / 1e6;
 +        s_sb.co[si] += (double)(sb_t2 - sb_t1) / 1e6;
-+    }
+     }
+-    s_eng_func[s_eng_func_count].hash = hash;
+-    s_eng_func[s_eng_func_count].fn   = fn;
+-    s_eng_func_count++;
 +    free(own);
 +    pthread_mutex_lock(&s_eng_func_lock);
 +    if (s_eng_func_count < eng_func_cap()) {
@@ -20646,12 +20671,12 @@ index 5b20d8a..f1f9085 100644
 +        vd.attributes[slot].offset      = (NSUInteger)(rank[k] * 16u);
 +        vd.attributes[slot].bufferIndex = MTL_VB_INDEX - k;
 +        rank[k]++;
-     }
--    vd.layouts[MTL_VB_INDEX].stride = vertex_stride;
++    }
 +    for (u32 k = 0; k < layout->n_streams; k++) {
 +        if (!rank[k]) return nil;
 +        vd.layouts[MTL_VB_INDEX - k].stride = rank[k] * 16u;
-+    }
+     }
+-    vd.layouts[MTL_VB_INDEX].stride = vertex_stride;
 +    return vd;
 +}
  
@@ -20683,15 +20708,15 @@ index 5b20d8a..f1f9085 100644
 + *     no compile at all, at once, outside the budget and the async queue.
 + *     The functions go into the engine's function memo as well, so a NEW
 + *     state over known programs is a state-only build.
-+ *   PS3_PIPELINE_ARCHIVE (default 1)  an MTLBinaryArchive beside the record
-+ *     (pipelines-<os and gpu>.metalarchive) holds the compiled binaries, so
-+ *     the rebuild is an archive load even when macOS's cache has lost them.
-+ *     One instance is only read (descriptor.binaryArchives, any thread); a
-+ *     second one of the same file takes the additions on a serial queue and
-+ *     is serialized to a temporary and renamed over the file, after
-+ *     PS3_PIPELINE_ARCHIVE_FLUSH (64) additions, 20 s after the first unsaved
-+ *     one, at the end of the prewarm and at exit. An archive that does not
-+ *     load is deleted and started again.
++ *   PS3_PIPELINE_ARCHIVE (default 1)  MTLBinaryArchive files beside the record
++ *     (pipelines-<os and gpu>-<n>.metalarchive) hold the compiled binaries,
++ *     so the rebuild is an archive load even when macOS's cache has lost
++ *     them. The loaded files are only read (descriptor.binaryArchives, any
++ *     thread); new pipelines wait in a list and are written as a new file
++ *     after PS3_PIPELINE_ARCHIVE_FLUSH (256) of them, 30 s after the first
++ *     unsaved one, at the end of the prewarm and at exit (see "the archive"
++ *     below for why never into an existing one). A file that does not load
++ *     is deleted.
 + *
 + * Why the table is keyed here and not by the draw engine's pipeline key: that
 + * key is made of guest state (program addresses' memos, texture formats...)
@@ -20738,15 +20763,16 @@ index 5b20d8a..f1f9085 100644
 +static int s_pc_cancel;                     /* shutdown / exit: the prewarm stops, queued additions are dropped */
 +static int s_pc_fd = -1;
 +static uint64_t s_pc_t0;
-+static char s_pc_path[1300], s_pa_path[1400];
-+static dispatch_queue_t s_pc_io;            /* serial: record appends and every use of s_pa_write */
++static char s_pc_path[1300];
++static dispatch_queue_t s_pc_io;            /* serial: record appends and the archive's saves */
 +static dispatch_group_t s_pc_group;         /* the prewarm */
 +static u32 s_pc_loaded, s_pc_served, s_pc_new;
 +static u32 s_pcw_built, s_pcw_already, s_pcw_failed;
-+/* The archive: s_pa_read is never changed once s_pa_ready is set. */
-+static id<MTLBinaryArchive> s_pa_read, s_pa_write;
-+static int s_pa_ready;
-+static u32 s_pa_hits, s_pa_added, s_pa_dirty, s_pa_flush_n = 64, s_pa_timer;
++/* The archive: s_pa_read (the chunks loaded at boot) is never changed once
++ * s_pa_ready is set. */
++static NSArray<id<MTLBinaryArchive>>* s_pa_read;
++static int s_pa_ready, s_pa_compact, s_pc_prewarm_on;
++static u32 s_pa_hits, s_pa_added, s_pa_new, s_pa_flush_n = 256, s_pa_timer;
 +
 +static u64 pc_key(const PcRec* r)
 +{
@@ -20789,7 +20815,7 @@ index 5b20d8a..f1f9085 100644
      /* nv40 COLOR_MASK byte layout: B=[0:7] G=[8:15] R=[16:23] A=[24:31], any
       * nonzero byte turning that channel on. */
      MTLColorWriteMask wm = MTLColorWriteMaskNone;
-@@ -2915,9 +4672,8 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+@@ -2915,9 +4673,8 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
       * stale. The count is rt_count, the set the engine resolved, and the
       * fragment function's own output count is whatever its program exports;
       * Metal accepts either side being the larger one. */
@@ -20801,7 +20827,7 @@ index 5b20d8a..f1f9085 100644
          MTLColorWriteMask twm = wm;
          int tblend = rs->blend_enable != 0;
          /* PS3RECOMP_METAL_MRT_MASK: 1 (default) the hardware rule above;
-@@ -2926,8 +4682,8 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+@@ -2926,8 +4683,8 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
           * is off, with per-target blend. */
          static int mrt_mode = -1;
          if (mrt_mode < 0) { const char* e = getenv("PS3RECOMP_METAL_MRT_MASK"); mrt_mode = e ? atoi(e) : 1; }
@@ -20812,7 +20838,7 @@ index 5b20d8a..f1f9085 100644
              if (mrt_mode == 1 || nib == 0) {
                  twm = MTLColorWriteMaskNone;
                  if (nib & 1u) twm |= MTLColorWriteMaskAlpha;
-@@ -2935,28 +4691,649 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+@@ -2935,28 +4692,784 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
                  if (nib & 4u) twm |= MTLColorWriteMaskGreen;
                  if (nib & 8u) twm |= MTLColorWriteMaskBlue;
              }
@@ -20880,13 +20906,7 @@ index 5b20d8a..f1f9085 100644
      }
 +    return pd;
 +}
- 
--    NSError* err = nil;
--    id<MTLRenderPipelineState> pso =
--        [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
--    if (!pso) {
--        fprintf(stderr, "[rsx engine/metal] pipeline state failed: %s\n",
--                [[err localizedDescription] UTF8String]);
++
 +/* s_pc_lock held. */
 +static int pc_find_locked(u64 key)
 +{
@@ -20909,70 +20929,177 @@ index 5b20d8a..f1f9085 100644
 +    return (int)i;
 +}
 +
-+/* ---- the archive (every function here runs on s_pc_io) ---- */
++/* ---- the archive (every function here runs on s_pc_io) ----
++ * An MTLBinaryArchive is written ONCE: a fresh one takes a batch of
++ * descriptors, is serialized and dropped. Adding to an archive that was
++ * loaded from a file, or serializing one a second time, is what the first
++ * version did and it does not work when pipelines share functions (they all
++ * do): the second serializeToURL fails with "missing 'vertex' stage in
++ * pipeline no. N" / "expecting 'fragment' stage", and the next one succeeds
++ * but holds only the additions since -- 37 of 617 pipelines survived a
++ * session, and one such save was 95.7 MB. (Reproduced outside the game with
++ * the recorded pipelines: one archive, 741 additions, one serialize is
++ * 16.7 MB and 741 hits; the same in steps of 64 fails every second save.)
++ * So the archive on disk is a set of chunk files,
++ * pipelines-<os and gpu>-<n>.metalarchive, all of them given to
++ * descriptor.binaryArchives; a save writes the pipelines waiting in
++ * s_pa_pend as a new chunk; and when there are more than
++ * PS3_PIPELINE_ARCHIVE_CHUNKS (6) of them the boot prewarm writes everything
++ * it rebuilds into one chunk and removes the others. Past
++ * PS3_PIPELINE_ARCHIVE_MAX_MB (192) nothing more is written. */
++static NSMutableArray<MTLRenderPipelineDescriptor*>* s_pa_pend;
++static NSMutableArray<NSNumber*>* s_pa_pend_key;
++static NSMutableArray<NSString*>* s_pa_files;   /* this OS and GPU's chunks on disk */
++static char s_pa_prefix[64];
++static u32 s_pa_seq;                            /* the next chunk's number */
++static uint64_t s_pa_bytes, s_pa_max_bytes = 192ull << 20;
++static u32 s_pa_max_chunks = 6;
 +
-+static void pa_flush(void)
++static uint64_t pa_file_size(const char* path)
 +{
-+    if (!s_pa_dirty || !s_pa_write) return;
++    struct stat st;
++    return stat(path, &st) == 0 ? (uint64_t)st.st_size : 0;
++}
+ 
++/* descs[lo, hi) as one chunk file. 1 when everything was written into a
++ * single file; 0 when it was split, something was dropped, or it failed. A
++ * batch that does not serialize is halved until the descriptor at fault is
++ * alone, which is named and left out. */
++static int pa_write_chunk(NSArray<MTLRenderPipelineDescriptor*>* descs, NSArray<NSNumber*>* keys,
++                          NSUInteger lo, NSUInteger hi, u32* written) API_AVAILABLE(macos(11.0))
++{
++    if (hi <= lo) return 1;
+     NSError* err = nil;
+-    id<MTLRenderPipelineState> pso =
+-        [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
+-    if (!pso) {
+-        fprintf(stderr, "[rsx engine/metal] pipeline state failed: %s\n",
+-                [[err localizedDescription] UTF8String]);
++    int whole = 1;
++    u32 n = 0;
++    BOOL ok = NO;
++    char path[1500], tmp[1560];
++    snprintf(path, sizeof path, "%s/%s-%04u.metalarchive", s_sc_dir, s_pa_prefix, s_pa_seq);
++    snprintf(tmp, sizeof tmp, "%s.%d.tmp", path, (int)getpid());
++    @autoreleasepool {
++        id<MTLBinaryArchive> ar = [s_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&err];
++        if (!ar) {
++            fprintf(stderr, "[pipeline cache] no archive: %s\n", [[err localizedDescription] UTF8String]);
++            return 0;
++        }
++        for (NSUInteger i = lo; i < hi; i++) {
++            /* A descriptor with a stage missing is what the packer chokes on. */
++            MTLRenderPipelineDescriptor* d = descs[i];
++            NSError* e = nil;
++            if (d.vertexFunction && d.fragmentFunction &&
++                [ar addRenderPipelineFunctionsWithDescriptor:d error:&e]) { n++; continue; }
++            whole = 0;
++            static int logged;
++            if (logged++ < 8)
++                fprintf(stderr, "[pipeline cache] archive: pipeline %016llx left out (%s)\n",
++                        [keys[i] unsignedLongLongValue],
++                        e ? [[e localizedDescription] UTF8String] : "a stage is missing");
++        }
++        if (!n) return 0;
++        ok = [ar serializeToURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:tmp]] error:&err];
++        if (ok && rename(tmp, path) != 0) ok = NO;
++        if (!ok) unlink(tmp);
++    }
++    if (ok) {
++        s_pa_seq++;
++        s_pa_bytes += pa_file_size(path);
++        [s_pa_files addObject:[NSString stringWithUTF8String:path]];
++        *written += n;
++        return whole;
++    }
++    static int logged;
++    if (hi - lo == 1) {
++        if (logged++ < 8)
++            fprintf(stderr, "[pipeline cache] archive: pipeline %016llx cannot be serialized, left out\n",
++                    [keys[lo] unsignedLongLongValue]);
+         return 0;
+     }
++    if (logged++ < 8) {
++        NSString* why = [err localizedDescription];
++        if (why.length > 120) why = [why substringFromIndex:why.length - 120];
++        fprintf(stderr, "[pipeline cache] archive: a save of %u failed (...%s); retried in halves\n",
++                (unsigned)(hi - lo), why ? [why UTF8String] : "?");
++    }
++    const NSUInteger mid = lo + (hi - lo) / 2;
++    pa_write_chunk(descs, keys, lo, mid, written);
++    pa_write_chunk(descs, keys, mid, hi, written);
++    return 0;
++}
++
++/* What waits in s_pa_pend into a new chunk. `compact`: it is everything the
++ * prewarm rebuilt, and written whole it replaces every older chunk. */
++static void pa_save(int compact)
++{
++    if (!s_pa_pend || !s_pa_pend.count) return;
 +    if (@available(macOS 11.0, *)) {
-+        @autoreleasepool {
-+            const uint64_t t0 = ps3_ft_now();
-+            char tmp[1500];
-+            snprintf(tmp, sizeof tmp, "%s.%d.tmp", s_pa_path, (int)getpid());
-+            NSError* err = nil;
-+            const BOOL ok = [s_pa_write serializeToURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:tmp]]
-+                                                 error:&err];
-+            if (ok && rename(tmp, s_pa_path) == 0) {
-+                struct stat st;
-+                const double mb = stat(s_pa_path, &st) == 0 ? (double)st.st_size / 1048576.0 : 0.0;
-+                fprintf(stderr, "[pipeline cache] archive saved: %u new binaries (%u this session), %.1f MB, %.0f ms\n",
-+                        s_pa_dirty, s_pa_added, mb, (double)(ps3_ft_now() - t0) / 1e6);
-+                s_pa_dirty = 0;
-+            } else {
-+                static int logged;
-+                unlink(tmp);
-+                if (!logged++)
-+                    fprintf(stderr, "[pipeline cache] archive not saved: %s\n",
-+                            ok ? strerror(errno) : [[err localizedDescription] UTF8String]);
++        NSArray<MTLRenderPipelineDescriptor*>* descs = s_pa_pend;
++        NSArray<NSNumber*>* keys = s_pa_pend_key;
++        s_pa_pend = [NSMutableArray new];
++        s_pa_pend_key = [NSMutableArray new];
++        if (s_pa_bytes >= s_pa_max_bytes && !compact) {
++            static int logged;
++            if (!logged++)
++                fprintf(stderr, "[pipeline cache] archive is %.0f MB, its limit (PS3_PIPELINE_ARCHIVE_MAX_MB):"
++                                " new pipelines are recorded but their binaries are not kept\n",
++                        (double)s_pa_bytes / 1048576.0);
++            return;
++        }
++        const uint64_t t0 = ps3_ft_now();
++        NSArray<NSString*>* older = compact ? [s_pa_files copy] : nil;
++        const uint64_t before = s_pa_bytes;
++        u32 written = 0;
++        const int whole = pa_write_chunk(descs, keys, 0, descs.count, &written);
++        if (compact && whole) {
++            for (NSString* f in older) {
++                s_pa_bytes -= pa_file_size([f UTF8String]);
++                unlink([f UTF8String]);
++                [s_pa_files removeObject:f];
 +            }
 +        }
++        __atomic_add_fetch(&s_pa_added, written, __ATOMIC_RELAXED);
++        fprintf(stderr, "[pipeline cache] archive saved: %u of %u binaries in %.0f ms%s; %u file(s), %.1f MB (was %.1f)\n",
++                written, (unsigned)descs.count, (double)(ps3_ft_now() - t0) / 1e6,
++                compact ? (whole ? ", all chunks merged into one" : ", merge incomplete: older chunks kept") : "",
++                (unsigned)s_pa_files.count, (double)s_pa_bytes / 1048576.0, (double)before / 1048576.0);
 +    }
 +}
 +
-+/* The compiled binaries of `pd` into the archive, off the caller's thread. */
-+static void pa_add(MTLRenderPipelineDescriptor* pd)
++static void pa_drop(void)
 +{
-+    if (!s_pc_archive_on || !pd) return;
++    [s_pa_pend removeAllObjects];
++    [s_pa_pend_key removeAllObjects];
++}
++
++/* A built pipeline's binaries for the next save, off the caller's thread.
++ * Nothing is compiled or written here. */
++static void pa_add(MTLRenderPipelineDescriptor* pd, u64 key)
++{
++    if (!s_pc_archive_on || !pd || !pd.vertexFunction || !pd.fragmentFunction) return;
 +    MTLRenderPipelineDescriptor* c = [pd copy];
++    if (@available(macOS 11.0, *)) c.binaryArchives = nil;
 +    dispatch_async(s_pc_io, ^{
-+        if (__atomic_load_n(&s_pc_cancel, __ATOMIC_ACQUIRE) || !s_pa_write) return;
-+        if (@available(macOS 11.0, *)) {
-+            @autoreleasepool {
-+                c.binaryArchives = nil;
-+                NSError* err = nil;
-+                if (![s_pa_write addRenderPipelineFunctionsWithDescriptor:c error:&err]) {
-+                    static int logged;
-+                    if (logged++ < 4)
-+                        fprintf(stderr, "[pipeline cache] archive: a pipeline was not added: %s\n",
-+                                [[err localizedDescription] UTF8String]);
-+                    return;
-+                }
-+            }
-+            __atomic_add_fetch(&s_pa_added, 1, __ATOMIC_RELAXED);
-+            if (++s_pa_dirty >= s_pa_flush_n) { pa_flush(); return; }
-+            if (!s_pa_timer) {
-+                s_pa_timer = 1;
-+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * (int64_t)NSEC_PER_SEC), s_pc_io, ^{
-+                    s_pa_timer = 0;
-+                    pa_flush();
-+                });
-+            }
++        if (!s_pa_pend) return;                 /* no archive on this system */
++        [s_pa_pend addObject:c];
++        [s_pa_pend_key addObject:@(key)];
++        if (__atomic_load_n(&s_pa_compact, __ATOMIC_ACQUIRE)) return;   /* one save, at the end of the prewarm */
++        if (s_pa_pend.count >= s_pa_flush_n) { pa_save(0); return; }
++        if (!s_pa_timer) {
++            s_pa_timer = 1;
++            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * (int64_t)NSEC_PER_SEC), s_pc_io, ^{
++                s_pa_timer = 0;
++                if (!__atomic_load_n(&s_pa_compact, __ATOMIC_ACQUIRE)) pa_save(0);
++            });
 +        }
 +    });
 +}
 +
-+/* Binaries are the GPU's and the system's: the file is named after both, and
-+ * the others' files are removed. One that does not load is removed too. */
++/* Binaries are the GPU's and the system's: the chunks are named after both,
++ * and the others' files are removed. One that does not load is removed too. */
 +static void pa_load(void)
 +{
 +    if (@available(macOS 11.0, *)) {
@@ -20981,50 +21108,62 @@ index 5b20d8a..f1f9085 100644
 +            NSString* id_s = [NSString stringWithFormat:@"%@|%@", os, s_dev.name];
 +            const char* idc = [id_s UTF8String];
 +            const u64 tag = fnv1a64(idc, (u32)strlen(idc), 1469598103934665603ull);
-+            char mine[64];
-+            snprintf(mine, sizeof mine, "pipelines-%016llx.metalarchive", (unsigned long long)tag);
-+            snprintf(s_pa_path, sizeof s_pa_path, "%s/%s", s_sc_dir, mine);
++            snprintf(s_pa_prefix, sizeof s_pa_prefix, "pipelines-%016llx", (unsigned long long)tag);
++            const size_t plen = strlen(s_pa_prefix);
++            const uint64_t t0 = ps3_ft_now();
++            NSMutableArray<id<MTLBinaryArchive>>* loaded = [NSMutableArray new];
++            NSMutableArray<NSString*>* names = [NSMutableArray new];
++            s_pa_files = [NSMutableArray new];
 +            DIR* d = opendir(s_sc_dir);
 +            if (d) {
 +                struct dirent* de;
 +                while ((de = readdir(d))) {
-+                    if (strncmp(de->d_name, "pipelines-", 10) || !strstr(de->d_name, ".metalarchive") ||
-+                        !strncmp(de->d_name, mine, strlen(mine))) continue;   /* mine, and a .tmp of mine in flight elsewhere */
-+                    char old[1700];
-+                    snprintf(old, sizeof old, "%s/%s", s_sc_dir, de->d_name);
-+                    unlink(old);
++                    const char* nm = de->d_name;
++                    const size_t len = strlen(nm);
++                    if (strncmp(nm, "pipelines-", 10) || !strstr(nm, ".metalarchive")) continue;
++                    const int chunk = len > 13 && !strcmp(nm + len - 13, ".metalarchive");
++                    /* Another system's, a save that never finished, or the
++                     * first version's single file (mostly empty: see above). */
++                    if (!chunk || strncmp(nm, s_pa_prefix, plen) || nm[plen] != '-') {
++                        char old[1700];
++                        snprintf(old, sizeof old, "%s/%s", s_sc_dir, nm);
++                        unlink(old);
++                        continue;
++                    }
++                    [names addObject:[NSString stringWithUTF8String:nm]];
 +                }
 +                closedir(d);
 +            }
-+            const uint64_t t0 = ps3_ft_now();
-+            id<MTLBinaryArchive> rd = nil, wr = nil;
-+            MTLBinaryArchiveDescriptor* ad = [MTLBinaryArchiveDescriptor new];
-+            struct stat st;
-+            const int have = stat(s_pa_path, &st) == 0 && st.st_size > 0;
-+            if (have) {
++            [names sortUsingSelector:@selector(compare:)];
++            for (NSString* nm in names) {
++                NSString* path = [[NSString stringWithUTF8String:s_sc_dir] stringByAppendingPathComponent:nm];
++                const u32 seq = (u32)atoi([nm UTF8String] + plen + 1);
++                if (seq >= s_pa_seq) s_pa_seq = seq + 1;
 +                NSError* err = nil;
-+                ad.url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:s_pa_path]];
-+                rd = [s_dev newBinaryArchiveWithDescriptor:ad error:&err];
-+                if (rd) wr = [s_dev newBinaryArchiveWithDescriptor:ad error:&err];
-+                if (!rd || !wr) {
-+                    fprintf(stderr, "[pipeline cache] archive discarded (it did not load: %s)\n",
-+                            [[err localizedDescription] UTF8String]);
-+                    rd = wr = nil;
-+                    unlink(s_pa_path);
++                MTLBinaryArchiveDescriptor* ad = [MTLBinaryArchiveDescriptor new];
++                ad.url = [NSURL fileURLWithPath:path];
++                id<MTLBinaryArchive> ar = [s_dev newBinaryArchiveWithDescriptor:ad error:&err];
++                if (!ar) {
++                    fprintf(stderr, "[pipeline cache] archive %s discarded (it did not load: %s)\n",
++                            [nm UTF8String], [[err localizedDescription] UTF8String]);
++                    unlink([path UTF8String]);
++                    continue;
 +                }
++                [loaded addObject:ar];
++                [s_pa_files addObject:path];
++                s_pa_bytes += pa_file_size([path UTF8String]);
 +            }
-+            if (!wr) {
-+                NSError* err = nil;
-+                ad.url = nil;
-+                wr = [s_dev newBinaryArchiveWithDescriptor:ad error:&err];
-+                if (!wr) fprintf(stderr, "[pipeline cache] no archive: %s\n", [[err localizedDescription] UTF8String]);
-+            }
-+            s_pa_write = wr;
-+            if (rd) {
-+                s_pa_read = rd;
++            s_pa_pend = [NSMutableArray new];
++            s_pa_pend_key = [NSMutableArray new];
++            if (loaded.count) {
++                s_pa_read = [loaded copy];
++                /* Too many chunks: this boot's prewarm writes them as one. */
++                if (loaded.count > s_pa_max_chunks && s_pc_prewarm_on && s_pc_loaded)
++                    __atomic_store_n(&s_pa_compact, 1, __ATOMIC_RELEASE);
 +                __atomic_store_n(&s_pa_ready, 1, __ATOMIC_RELEASE);
-+                fprintf(stderr, "[pipeline cache] archive loaded: %.1f MB in %.0f ms\n",
-+                        (double)st.st_size / 1048576.0, (double)(ps3_ft_now() - t0) / 1e6);
++                fprintf(stderr, "[pipeline cache] archive loaded: %u file(s), %.1f MB in %.0f ms%s\n",
++                        (unsigned)loaded.count, (double)s_pa_bytes / 1048576.0, (double)(ps3_ft_now() - t0) / 1e6,
++                        s_pa_compact ? " (to be merged into one)" : "");
 +            }
 +        }
 +    }
@@ -21037,7 +21176,7 @@ index 5b20d8a..f1f9085 100644
 +    *hit = 0;
 +    if (@available(macOS 11.0, *)) {
 +        if (__atomic_load_n(&s_pa_ready, __ATOMIC_ACQUIRE)) {
-+            pd.binaryArchives = @[ s_pa_read ];
++            pd.binaryArchives = s_pa_read;
 +            id<MTLRenderPipelineState> pso =
 +                [s_dev newRenderPipelineStateWithDescriptor:pd
 +                                                    options:MTLPipelineOptionFailOnBinaryArchiveMiss
@@ -21094,7 +21233,11 @@ index 5b20d8a..f1f9085 100644
 +                }
 +            });
 +    }
-+    if (!from_archive) pa_add(pd);
++    /* Not in the archive, or the archive is being rewritten whole. */
++    if (!from_archive || __atomic_load_n(&s_pa_compact, __ATOMIC_ACQUIRE)) {
++        if (!from_archive) __atomic_add_fetch(&s_pa_new, 1, __ATOMIC_RELAXED);
++        pa_add(pd, rec.key);
++    }
 +}
 +
 +/* The record file into the table; what is past the last whole record is cut
@@ -21190,7 +21333,10 @@ index 5b20d8a..f1f9085 100644
 +        s_pc[idx].state = pso ? PC_READY : PC_FAILED;
 +    }
 +    os_unfair_lock_unlock(&s_pc_lock);
-+    if (pso && !hit) pa_add(pd);
++    if (pso && (!hit || __atomic_load_n(&s_pa_compact, __ATOMIC_ACQUIRE))) {
++        if (!hit) __atomic_add_fetch(&s_pa_new, 1, __ATOMIC_RELAXED);
++        pa_add(pd, rec.key);
++    }
 +    __atomic_add_fetch(!mine ? &s_pcw_already : pso ? &s_pcw_built : &s_pcw_failed, 1, __ATOMIC_RELAXED);
 +}
 +
@@ -21236,17 +21382,25 @@ index 5b20d8a..f1f9085 100644
 +            free(order);
 +        }
 +        const int cancelled = __atomic_load_n(&s_pc_cancel, __ATOMIC_ACQUIRE);
++        /* The rebuild alone: with macOS's cache or the archive behind it a
++         * pipeline is well under a millisecond, so hundreds in 0.1 s is real.
++         * The archive's save is timed in its own line. */
 +        const double secs = (double)(ps3_ft_now() - t0) / 1e9;
 +        dispatch_sync(s_pc_io, ^{               /* after the additions queued so far */
 +            const u32 from_archive = __atomic_load_n(&s_pa_hits, __ATOMIC_RELAXED) - hits0;
-+            const u32 added = __atomic_load_n(&s_pa_added, __ATOMIC_RELAXED);
-+            fprintf(stderr, "[pipeline cache] %u recorded pipelines, %u rebuilt at boot in %.1f s"
++            const u32 fresh = __atomic_load_n(&s_pa_new, __ATOMIC_RELAXED);
++            fprintf(stderr, "[pipeline cache] %u recorded pipelines, %u rebuilt at boot in %.2f s"
 +                            " (%u already in table), archive: %u binaries",
-+                    n, s_pcw_built, secs, s_pcw_already, s_pc_archive_on ? from_archive + added : 0u);
-+            if (s_pc_archive_on) fprintf(stderr, " (%u loaded from it, %u compiled and added)", from_archive, added);
++                    n, s_pcw_built, secs, s_pcw_already, s_pc_archive_on ? from_archive + fresh : 0u);
++            if (s_pc_archive_on) fprintf(stderr, " (%u loaded from it, %u compiled and to be added)", from_archive, fresh);
 +            if (s_pcw_failed) fprintf(stderr, "; %u not rebuilt (no cached MSL, or the build failed)", s_pcw_failed);
 +            fprintf(stderr, "%s\n", cancelled ? "; stopped early" : "");
-+            if (!cancelled) pa_flush();
++            /* A merge needs every pipeline: a prewarm cut short leaves the
++             * chunks as they are, and the next boot tries again. */
++            const int merging = __atomic_load_n(&s_pa_compact, __ATOMIC_ACQUIRE);
++            if (merging && cancelled) pa_drop();    /* mostly binaries the chunks already hold */
++            pa_save(merging && !cancelled);
++            __atomic_store_n(&s_pa_compact, 0, __ATOMIC_RELEASE);
 +        });
 +        if (!cancelled) sc_prewarm();           /* the MSL the records do not name */
 +        dispatch_group_leave(s_pc_group);
@@ -21262,13 +21416,16 @@ index 5b20d8a..f1f9085 100644
 +            __atomic_load_n(&s_pa_added, __ATOMIC_RELAXED));
 +}
 +
-+/* Exit: what is queued for the archive is dropped (the next boot's prewarm
-+ * adds whatever is missing), what is in it is saved. */
++/* Exit: the pipelines still waiting for the archive are saved. */
 +static void pc_atexit(void)
 +{
 +    if (!s_pc_on) return;
 +    __atomic_store_n(&s_pc_cancel, 1, __ATOMIC_RELEASE);
-+    dispatch_sync(s_pc_io, ^{ pa_flush(); pc_session_line(); });
++    dispatch_sync(s_pc_io, ^{
++        if (__atomic_load_n(&s_pa_compact, __ATOMIC_ACQUIRE)) pa_drop();    /* a merge in progress: the next boot's */
++        pa_save(0);
++        pc_session_line();
++    });
 +}
 +
 +/* eng_shutdown: the prewarm writes the function memo, which is reset there. */
@@ -21277,7 +21434,7 @@ index 5b20d8a..f1f9085 100644
 +    if (!s_pc_on) return;
 +    __atomic_store_n(&s_pc_cancel, 1, __ATOMIC_RELEASE);
 +    dispatch_group_wait(s_pc_group, DISPATCH_TIME_FOREVER);
-+    dispatch_sync(s_pc_io, ^{ pa_flush(); pc_session_line(); });
++    dispatch_sync(s_pc_io, ^{ pa_save(0); pc_session_line(); });
 +    __atomic_store_n(&s_pc_cancel, 0, __ATOMIC_RELEASE);
 +}
 +
@@ -21295,7 +21452,10 @@ index 5b20d8a..f1f9085 100644
 +    s_pc_t0 = ps3_ft_now();
 +    s_pc_record_on = rec;
 +    s_pc_archive_on = arc;
++    s_pc_prewarm_on = pre;
 +    if ((e = getenv("PS3_PIPELINE_ARCHIVE_FLUSH")) && atoi(e) > 0) s_pa_flush_n = (u32)atoi(e);
++    if ((e = getenv("PS3_PIPELINE_ARCHIVE_MAX_MB")) && atoi(e) > 0) s_pa_max_bytes = (uint64_t)atoi(e) << 20;
++    if ((e = getenv("PS3_PIPELINE_ARCHIVE_CHUNKS")) && atoi(e) > 0) s_pa_max_chunks = (u32)atoi(e);
 +    snprintf(s_pc_path, sizeof s_pc_path, "%s/pipelines.rec", s_sc_dir);
 +    pc_load();
 +    s_pc_io = dispatch_queue_create("ps3recomp.pipelines",
@@ -21395,8 +21555,8 @@ index 5b20d8a..f1f9085 100644
 +        static u32 logged;
 +        if (!logged++) fprintf(stderr, "[RSX metal] pipeline table full (%u): new pipelines fail"
 +                                       " (PS3RECOMP_METAL_MAX_PIPES)\n", eng_pipe_cap());
-         return 0;
-     }
++        return 0;
++    }
 +    if (s_eng_pipe_count && (s_eng_pipe_count & 511u) == 0u)
 +        fprintf(stderr, "[RSX metal] %u pipelines, %u functions\n", s_eng_pipe_count, s_eng_func_count);
 +    const uint64_t sb_t0 = sb_on() ? ps3_ft_now() : 0;   /* PS3_SHADER_TIMING */
@@ -21477,7 +21637,7 @@ index 5b20d8a..f1f9085 100644
  
      /* Depth and stencil are pipeline state in D3D12 and an encoder object in
       * Metal, so the engine's render state splits here rather than upstream. */
-@@ -2988,13 +5365,15 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+@@ -2988,13 +5501,15 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
          }
      }
      id<MTLDepthStencilState> ds = [s_dev newDepthStencilStateWithDescriptor:dd];
@@ -21494,7 +21654,7 @@ index 5b20d8a..f1f9085 100644
      s_eng_pipe[slot].cull = MTLCullModeNone;
      if (rs->cull_enable && rs->cull_face)
          s_eng_pipe[slot].cull = (rs->cull_face == 0x0404u || rs->cull_face == 0x0408u)
-@@ -3004,6 +5383,40 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+@@ -3004,6 +5519,40 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
      s_eng_pipe[slot].winding = (rs->front_face == 0x0901u)
                                     ? MTLWindingCounterClockwise
                                     : MTLWindingClockwise;
@@ -21535,7 +21695,7 @@ index 5b20d8a..f1f9085 100644
      return slot + 1;
  }
  
-@@ -3048,10 +5461,19 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
+@@ -3048,10 +5597,19 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
                    | ((u64)d->wrap_s << 4) | ((u64)d->wrap_t << 8)
                    | ((u64)d->wrap_r << 12)
                    | ((u64)(u32)(d->min_lod * 256.0f) << 16)
@@ -21557,7 +21717,7 @@ index 5b20d8a..f1f9085 100644
      MTLSamplerDescriptor* sd = [MTLSamplerDescriptor new];
      sd.minFilter = d->min_linear ? MTLSamplerMinMagFilterLinear
                                   : MTLSamplerMinMagFilterNearest;
-@@ -3065,7 +5487,18 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
+@@ -3065,7 +5623,18 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
      sd.sAddressMode = gcm_wrap_to_metal(d->wrap_s);
      sd.tAddressMode = gcm_wrap_to_metal(d->wrap_t);
      sd.rAddressMode = gcm_wrap_to_metal(d->wrap_r);
@@ -21577,7 +21737,7 @@ index 5b20d8a..f1f9085 100644
      if (d->min_linear && d->mip_present && eng_aniso() > 1)
          sd.maxAnisotropy = (NSUInteger)eng_aniso();
      id<MTLSamplerState> s = [s_dev newSamplerStateWithDescriptor:sd];
-@@ -3076,90 +5509,428 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
+@@ -3076,90 +5645,428 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
      return slot;
  }
  
@@ -22055,7 +22215,7 @@ index 5b20d8a..f1f9085 100644
      r->vertex_count = vertex_count;
      r->ib_off       = ib_off;
      r->index_count  = indices ? index_count : 0;
-@@ -3174,7 +5945,7 @@ static void eng_clear_color(void* user, u32 surface, const float rgba[4])
+@@ -3174,7 +6081,7 @@ static void eng_clear_color(void* user, u32 surface, const float rgba[4])
                     ((u32)(rgba[0] * 255.0f + 0.5f) << 16) |
                     ((u32)(rgba[1] * 255.0f + 0.5f) <<  8) |
                      (u32)(rgba[2] * 255.0f + 0.5f);
@@ -22064,7 +22224,7 @@ index 5b20d8a..f1f9085 100644
      EngRecord* r = &s_eng_rec[s_eng_rec_count++];
      memset(r, 0, sizeof *r);
      r->kind  = ENG_REC_CLEAR_COLOR;
-@@ -3187,7 +5958,7 @@ static void eng_clear_depth_stencil(void* user, u32 depth, u32 flags,
+@@ -3187,7 +6094,7 @@ static void eng_clear_depth_stencil(void* user, u32 depth, u32 flags,
                                      float depth_value, u8 stencil)
  {
      (void)user;
@@ -22073,7 +22233,7 @@ index 5b20d8a..f1f9085 100644
      EngRecord* r = &s_eng_rec[s_eng_rec_count++];
      memset(r, 0, sizeof *r);
      r->kind = ENG_REC_CLEAR_DS;
-@@ -3197,39 +5968,185 @@ static void eng_clear_depth_stencil(void* user, u32 depth, u32 flags,
+@@ -3197,39 +6104,185 @@ static void eng_clear_depth_stencil(void* user, u32 depth, u32 flags,
      r->clear_stencil = stencil;
  }
  
@@ -22280,7 +22440,7 @@ index 5b20d8a..f1f9085 100644
      }
      /* An indexed draw is really indexed here: the index buffer is what keeps a
       * strip's shared vertices from being fetched and uploaded per triangle.
-@@ -3291,6 +6208,114 @@ static int eng_encode_clear(id<MTLCommandBuffer> cb, const EngRecord* r)
+@@ -3291,6 +6344,114 @@ static int eng_encode_clear(id<MTLCommandBuffer> cb, const EngRecord* r)
      return 1;
  }
  
@@ -22395,7 +22555,7 @@ index 5b20d8a..f1f9085 100644
  /* One pass per contiguous run of draws against the same attachments, with any
   * clears immediately ahead of it folded into its load actions. A clear whose
   * targets the following draw does not share becomes a pass of its own, which
-@@ -3305,8 +6330,13 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3305,8 +6466,13 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              const EngRecord* r = &s_eng_rec[i++];
              id<MTLTexture> src = eng_obj(r->rt[0]);
              id<MTLTexture> dst = eng_obj(r->resolve_dst);
@@ -22411,7 +22571,7 @@ index 5b20d8a..f1f9085 100644
                  s_eng_dropped++; continue;
              }
              id<MTLBlitCommandEncoder> copy = [cb blitCommandEncoder];
-@@ -3314,17 +6344,44 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3314,17 +6480,44 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              s_ft_copies++;
              [copy copyFromTexture:src sourceSlice:0 sourceLevel:0
                     sourceOrigin:MTLOriginMake(0, 0, 0)
@@ -22458,7 +22618,7 @@ index 5b20d8a..f1f9085 100644
              MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
              rp.colorAttachments[0].texture     = dst;
              rp.colorAttachments[0].loadAction  = MTLLoadActionDontCare;
-@@ -3332,7 +6389,7 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3332,7 +6525,7 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
              if (!e) { s_eng_encoding_failed = 1; continue; }
              s_ft_resolves++;
@@ -22467,7 +22627,7 @@ index 5b20d8a..f1f9085 100644
              [e setFragmentTexture:src atIndex:0];
              [e setFragmentSamplerState:s_eng_point_sampler atIndex:0];
              [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-@@ -3340,6 +6397,15 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3340,6 +6533,15 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              continue;
          }
  
@@ -22483,7 +22643,7 @@ index 5b20d8a..f1f9085 100644
          /* The clears queued ahead of this pass. A colour clear names one
           * surface and an MRT set arrives as one clear per target, so they are
           * collected rather than compared: they become load actions on the
-@@ -3354,7 +6420,9 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3354,7 +6556,9 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
          u8 cstencil = 0;
          while (i < s_eng_rec_count && s_eng_rec[i].kind != ENG_REC_DRAW &&
                 s_eng_rec[i].kind != ENG_REC_DEPTH_RESOLVE &&
@@ -22494,7 +22654,7 @@ index 5b20d8a..f1f9085 100644
              const EngRecord* r = &s_eng_rec[i];
              if (r->kind == ENG_REC_CLEAR_COLOR) {
                  u32 k = 0;
-@@ -3467,6 +6535,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3467,6 +6671,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              rp.renderTargetHeight = [zbuf height];
          }
  
@@ -22503,7 +22663,7 @@ index 5b20d8a..f1f9085 100644
          id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
          /* A draw's pipeline declares as many colour attachments as its record
           * named, so a pass that could not bind them all takes its clears and
-@@ -3475,10 +6545,11 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3475,10 +6681,11 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              s_eng_encoding_failed = 1;
              if (enc) [enc endEncoding];
              while (i < s_eng_rec_count && s_eng_rec[i].kind == ENG_REC_DRAW &&
@@ -22516,7 +22676,7 @@ index 5b20d8a..f1f9085 100644
          while (i < s_eng_rec_count && s_eng_rec[i].kind == ENG_REC_DRAW &&
                 eng_record_targets_are(&s_eng_rec[i], rt, nrt) &&
                 (s_eng_rec[i].depth == depth ||
-@@ -3536,6 +6607,115 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3536,6 +6743,115 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
      return s_eng_fxaa_tex;
  }
  
@@ -22632,7 +22792,7 @@ index 5b20d8a..f1f9085 100644
  /* Put a surface on the drawable. A straight blit would need matching formats
   * and sizes; a full-screen sample needs neither, and the guest's surfaces are
   * routinely a different size from the window.
-@@ -3549,6 +6729,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+@@ -3549,6 +6865,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
      if (!src || !dst || !s_eng_helper_lib) return;
      eng_post_options();
      if (s_eng_fxaa) { id<MTLTexture> t = eng_fxaa(cb, src); if (t) src = t; }
@@ -22640,7 +22800,7 @@ index 5b20d8a..f1f9085 100644
      if (!s_eng_blit_pso || s_eng_blit_pso_fmt != [dst pixelFormat]) {
          MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
          pd.vertexFunction   = [s_eng_helper_lib newFunctionWithName:@"eng_fullscreen_vs"];
-@@ -3576,10 +6757,16 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+@@ -3576,10 +6893,16 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
       * setting): out = in^gamma, as RPCS3's calibration pass applies it. The
       * sharpening taps are one source texel apart. */
      { extern float cellAvconfExt_display_gamma(void);
@@ -22660,7 +22820,7 @@ index 5b20d8a..f1f9085 100644
      [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
      [e endEncoding];
  }
-@@ -3600,6 +6787,8 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3600,6 +6923,8 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
      @autoreleasepool {
          id<CAMetalDrawable> drawable = nil;
          id<MTLTexture> dst = nil;
@@ -22669,7 +22829,7 @@ index 5b20d8a..f1f9085 100644
          const int windowed_present = (present_dst && !s_headless);
          { const uint64_t w0 = PS3_FT_ON() ? ps3_ft_now() : 0;
            if (windowed_present) dispatch_semaphore_wait(s_inflight, DISPATCH_TIME_FOREVER);
-@@ -3608,6 +6797,13 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3608,6 +6933,13 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
          if (present_dst) {
              if (s_headless) {
                  dst = s_offscreen;
@@ -22683,7 +22843,7 @@ index 5b20d8a..f1f9085 100644
              } else {
                  drawable = [s_layer nextDrawable];
                  if (!drawable) {           /* compositor is busy; skip */
-@@ -3619,12 +6815,12 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3619,12 +6951,12 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
          }
  
          id<MTLBuffer> stage = nil;
@@ -22699,7 +22859,7 @@ index 5b20d8a..f1f9085 100644
              if (windowed_present) dispatch_semaphore_signal(s_inflight);
              return;
          }
-@@ -3636,15 +6832,27 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3636,15 +6968,27 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
          if (ft_e0) ps3_ft_span(PS3_FT_GPU_ENCODE, 0, present_dst ? 1u : 0u, ft_nrec, ft_e0, ps3_ft_now());
          if (windowed_present) {
              dispatch_semaphore_t sem = s_inflight;
@@ -22729,7 +22889,7 @@ index 5b20d8a..f1f9085 100644
              if (ft_w0) {
                  const uint64_t w1 = ps3_ft_now();
                  ps3_ft_span(PS3_FT_GPU_WAIT, 0, present_dst ? 1u : 0u,
-@@ -3654,6 +6862,7 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3654,6 +6998,7 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
                      ps3_ft_span(PS3_FT_GPU_EXEC, s_ft_passes, s_ft_resolves | (s_ft_copies << 16),
                                  present_dst ? 1u : 0u, w1 - (uint64_t)(gpu_s * 1e9), w1);
              }
@@ -22737,7 +22897,7 @@ index 5b20d8a..f1f9085 100644
              s_eng_checked_completed = [cb status] == MTLCommandBufferStatusCompleted &&
                                        ![cb error] && !s_eng_dropped && !s_eng_encoding_failed;
              if (!s_eng_checked_completed) s_eng_encoding_failed = 1;
-@@ -3670,11 +6879,13 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3670,11 +7015,13 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
  
          if (s_eng_dropped) {
              fprintf(stderr, "[rsx engine/metal] dropped %u record(s) (cap %d)\n",
@@ -22752,7 +22912,7 @@ index 5b20d8a..f1f9085 100644
          eng_collect_retired_objects();
      }
  }
-@@ -3683,7 +6894,8 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3683,7 +7030,8 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
   * Headless submits have completed; windowed captures fence the same queue. */
  static void eng_dump_frame(id<MTLTexture> src)
  {
@@ -22762,7 +22922,7 @@ index 5b20d8a..f1f9085 100644
      if (!path || !*path) return;
      static unsigned frame;
      if ((++frame % 120) != 0) return;
-@@ -3715,13 +6927,99 @@ static void eng_dump_frame(id<MTLTexture> src)
+@@ -3715,13 +7063,99 @@ static void eng_dump_frame(id<MTLTexture> src)
      free(rgba);
  }
  
@@ -22862,7 +23022,7 @@ index 5b20d8a..f1f9085 100644
  }
  
  static void eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
-@@ -3730,8 +7028,22 @@ static void eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
+@@ -3730,8 +7164,22 @@ static void eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
      (void)user;
      id<MTLTexture> t = eng_obj(surface);
      if (!t || !out || !out_pitch || !w || !h) return;
@@ -22886,7 +23046,7 @@ index 5b20d8a..f1f9085 100644
      [t getBytes:out bytesPerRow:out_pitch
       fromRegion:MTLRegionMake2D(x, y, w, h) mipmapLevel:0];
      if (ft_t0) ps3_ft_span(PS3_FT_READBACK, 0, w, h, ft_t0, ps3_ft_now());
-@@ -3741,8 +7053,29 @@ static void eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
+@@ -3741,8 +7189,29 @@ static void eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
   * requested rectangle to CPU-coherent shared storage. Resolving only the ROI
   * would rescale the source and change its coordinates. Never expose bytes
   * until both the resolve and the copy have completed successfully. */
@@ -22916,7 +23076,7 @@ index 5b20d8a..f1f9085 100644
  {
      id<MTLTexture> src = eng_obj(depth);
      if (!s_dev || !s_queue || !src || !out || !w || !h ||
-@@ -3763,8 +7096,8 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+@@ -3763,8 +7232,8 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
          id<MTLBuffer> staging = [s_dev newBufferWithLength:copy_pitch * h
                                                   options:MTLResourceStorageModeShared];
          if (!staging || ![staging contents]) return -1;
@@ -22927,7 +23087,7 @@ index 5b20d8a..f1f9085 100644
          if (!snap) return -1;
          eng_encode_and_commit(nil);
          if (!s_eng_checked_completed) { eng_obj_release(user, snap); return -1; }
-@@ -3792,8 +7125,93 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+@@ -3792,8 +7261,93 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
      }
  }
  
@@ -23021,7 +23181,7 @@ index 5b20d8a..f1f9085 100644
      .init                 = eng_init,
      .shutdown             = eng_shutdown,
      .submit_and_wait      = eng_submit_and_wait,
-@@ -3804,26 +7222,41 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+@@ -3804,26 +7358,41 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
      .texture_upload_3d    = eng_texture_upload_3d,
      .color_target_create  = eng_color_target_create,
      .color_target_release = eng_obj_release,
@@ -23063,7 +23223,7 @@ index 5b20d8a..f1f9085 100644
      .present              = eng_present,
      .readback             = eng_readback,
  };
-@@ -3835,6 +7268,7 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
+@@ -3835,6 +7404,7 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
      @autoreleasepool {
          if (width)  s_width  = width;
          if (height) s_height = height;
@@ -23071,7 +23231,7 @@ index 5b20d8a..f1f9085 100644
  
          const char* hl = getenv("PS3RECOMP_METAL_HEADLESS");
          s_headless = (hl && *hl && *hl != '0');
-@@ -3855,7 +7289,19 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
+@@ -3855,7 +7425,19 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
          s_headless = 1;
          rc = create_offscreen();
  #else
@@ -23092,7 +23252,7 @@ index 5b20d8a..f1f9085 100644
  #endif
          if (rc != 0) {
              fprintf(stderr, "[RSX metal] surface creation failed\n");
-@@ -3906,14 +7352,30 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
+@@ -3906,14 +7488,30 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
           * passes both ways. PS3RECOMP_RSX_ENGINE=vtable is the way back, and
           * it stays that way until the vtable path has nothing left to say. */
          rsx_draw_engine_set_default(1);
@@ -23124,7 +23284,7 @@ index 5b20d8a..f1f9085 100644
                  [[s_dev name] UTF8String], s_width, s_height,
                  s_guest_shaders ? "on" : (rsx_hlsl_to_msl_available() ? "off (env)" : "off (translator not built)"),
                  s_eng_active ? "register-file draw engine" : "vtable");
-@@ -3925,6 +7387,7 @@ void rsx_metal_backend_shutdown(void)
+@@ -3925,6 +7523,7 @@ void rsx_metal_backend_shutdown(void)
  {
      @autoreleasepool {
          if (s_ready) rsx_set_backend(NULL);
@@ -23132,7 +23292,7 @@ index 5b20d8a..f1f9085 100644
          if (s_eng_active) rsx_draw_engine_shutdown();
          rsx_draw_engine_set_backend(NULL);
          /* Reclaim every in-flight slot so no command buffer is still
-@@ -3939,6 +7402,7 @@ void rsx_metal_backend_shutdown(void)
+@@ -3939,6 +7538,7 @@ void rsx_metal_backend_shutdown(void)
                  dispatch_semaphore_signal(s_inflight);
              s_inflight = nil;
          }
@@ -23140,7 +23300,7 @@ index 5b20d8a..f1f9085 100644
  #if !TARGET_OS_IPHONE
          /* Only touch the main queue when there is AppKit state to tear down:
           * headless runs never pump it, and a dispatch_sync there would hang. */
-@@ -3972,10 +7436,19 @@ void rsx_metal_backend_shutdown(void)
+@@ -3972,10 +7572,19 @@ void rsx_metal_backend_shutdown(void)
      }
  }
  
@@ -23160,7 +23320,7 @@ index 5b20d8a..f1f9085 100644
      @autoreleasepool {
          for (;;) {
              NSEvent* ev = [NSApp nextEventMatchingMask:NSEventMaskAny
-@@ -3983,8 +7456,15 @@ static int pump_messages_impl(void)
+@@ -3983,8 +7592,15 @@ static int pump_messages_impl(void)
                                                  inMode:NSDefaultRunLoopMode
                                                 dequeue:YES];
              if (!ev) break;
@@ -23176,7 +23336,7 @@ index 5b20d8a..f1f9085 100644
      }
  #endif
      return atomic_load(&s_closed) ? -1 : 0;
-@@ -4018,14 +7498,26 @@ void rsx_metal_backend_present(void)
+@@ -4018,14 +7634,26 @@ void rsx_metal_backend_present(void)
          if (ft_t0) ps3_ft_span(PS3_FT_PRESENT, 0, 0, 0, ft_t0, ps3_ft_now());
          return;
      }
@@ -23203,7 +23363,7 @@ index 5b20d8a..f1f9085 100644
          } else {
              drawable = [s_layer nextDrawable];
              if (!drawable) {            /* compositor is busy; skip this frame */
-@@ -4104,8 +7596,10 @@ void rsx_metal_backend_present(void)
+@@ -4104,8 +7732,10 @@ void rsx_metal_backend_present(void)
              [cb waitUntilCompleted];
          } else {
              dispatch_semaphore_t sem = s_inflight;

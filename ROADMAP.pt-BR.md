@@ -83,12 +83,17 @@ sendo trabalhado.
   (`GCM_SHADOW_FETCH`); um resync reexecuta as escritas de label/referência/
   report do caminho real (`GCM_RESYNC_REPLAY`); o orçamento por passada conta
   palavras (`GCM_FIFO_BUDGET_WORDS`). Execução de 9 minutos: sem desalinhamento
-  nem congelamento.
+  nem congelamento. (A sombra casava as cópias pelo endereço e podia repetir a
+  cópia do quadro anterior, o que travava o boot no logo da Insomniac; agora
+  casa pela ordem: 8 de 8 boots limpos.)
 - Os pipelines que o jogo monta são registrados (`pipelines.rec` no cache de
   shaders) e remontados no boot em segundo plano (`PS3_PIPELINE_RECORD`,
   `PS3_PIPELINE_PREWARM`): na segunda sessão 1878 pedidos vieram prontos e as
-  montagens durante o jogo caíram de 663 para 124. A parte do MTLBinaryArchive
-  (`PS3_PIPELINE_ARCHIVE`) fica desligada até os salvamentos funcionarem.
+  montagens durante o jogo caíram de 663 para 124. Os binários compilados
+  ficam em partes de MTLBinaryArchive escritas uma vez cada
+  (`PS3_PIPELINE_ARCHIVE`, ligado; unidas depois de 6 partes, limite de
+  192 MB): na sessão seguinte 781 de 781 vieram do arquivo, sem recompilar
+  mesmo se o macOS descartar o próprio cache.
   `PS3_FS_TIMING=<s>` mede as chamadas de arquivo.
 - Thread do RSX no combate em Haven: 45 -> 18 ms por quadro, esperas pela
   GPU 11 -> 0,2 ms por quadro, mediana de 30,0 fps e o pior quadro em 60 ms

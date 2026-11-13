@@ -1,6 +1,6 @@
 [package]
 name = "resistance3-launcher"
-version = "0.1.0"
+version = "0.1.1"
 description = "Launcher for the Resistance 3 static-recompilation port: your disc, the builds, settings, play"
 license = "MIT"
 edition = "2021"

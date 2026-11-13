@@ -7,7 +7,39 @@ comes next. Same layout as the Resistance: Fall of Man and Resistance 2
 roadmaps. `[x]` = done and verified; `[ ]` = to do; "(in progress)" = being
 worked on.
 
-## Status at a glance (2026-11-12)
+## Status at a glance (2026-11-13)
+
+- **Playable through the start of the campaign, at 30 fps.** The 01.00 disc
+  is lifted and built; install, movies, menus, a new game, the Haven cellar
+  and the Haven streets play correctly, with collision, the pause menu and
+  saves/continue working.
+- **Performance:** the Haven combat (the Stalker fight, the heaviest scene
+  tested) holds the game's 30 fps cap (median 30.0 fps, worst frame ~60 ms);
+  the RSX thread needs ~18-22 ms of the 33 ms a frame. SPU code runs almost
+  entirely lifted (~0.0-0.1 M interpreted steps/s). A 15-minute soak keeps
+  memory flat at 3.4-3.9 GB.
+- **First visits to new areas:** shaders macOS has never compiled still cost
+  something the first time; they now build in the background (an effect can
+  appear a fraction of a second late instead of the game stalling), and every
+  pipeline the game builds is recorded and rebuilt at boot from a binary
+  archive in later sessions.
+- **Not validated yet:** the campaign past Haven, sessions over ~15 minutes,
+  the 60 fps / FOV patches, the European disc.
+
+## How far the game has been played
+
+| Part | State |
+|---|---|
+| First boot: HDD install (1.5 GB), logos, Insomniac screen, auto-save notice | works |
+| Loading movie, front end, Campaign -> New Game / Continue | works |
+| Opening cinematics (in-engine and Bink) | work |
+| Haven: cellar (first gameplay), Capelli's family, first weapon pickups | works |
+| Haven streets: Chimera fight, Stalker with its shield, Bullseye and HE .44 Magnum | works, 30 fps |
+| Pause menu, journals, weapon screens | work |
+| Checkpoint reloads after dying | work, no long stalls |
+| Beyond the Haven streets (later chapters) | not played yet |
+
+## Fixes so far, in detail
 
 - **Boots, plays movies, opens the menu and plays the first level.** The
   01.00 disc is lifted and built, and the player walks on the ground: ground
@@ -191,22 +223,19 @@ worked on.
   first level (`haven_town_ridge`) at 30 fps.
 - [x] Relocatable SPU modules: 184 modules lifted by
   `tools/lift_r3_relocmods.py` (151 ig and 33 DEADDEAD).
-- [ ] First boot: logos, the auto-save notice, input (Resistance 2 needed a
-  front-end port-0 hook), menus.
-- [ ] The first boot's HDD install: which files Resistance 3 writes, for
-  `PS3_GAMEDATA_MARKERS` and the launcher's `HDD_INSTALL_MARKERS`; the save
-  slot names for the saves manager.
+- [x] First boot: logos, the auto-save notice, input, menus.
+- [x] The first boot's HDD install markers (`PS3_GAMEDATA_MARKERS`, the
+  launcher's `HDD_INSTALL_MARKERS`): no reinstall on every boot.
 - [x] Bink movies on the igPm queues; 3D cinematics also render.
 - [x] Player collision in the first level (SPU LS window).
-- [ ] Validate the campaign at 30 fps throughout (gameplay runs at 25-30 fps
-  with some SPU code still interpreted).
+- [x] 30 fps in the Haven streets and combat, SPU code lifted.
+- [ ] Validate the rest of the campaign at 30 fps (past Haven).
 - [ ] `tools/r3_survey.py --write-insn` and `RES_UNLOCK_FPS=1` / `RES_FOV` in
   play; then 60 fps.
 - [ ] Re-measure the disk space a full install takes (the launcher and
   `tools/install.sh` ask for 8 GB until then).
-- [ ] Publish the repository (`erikomis/resistance3-recomp`, the name the
-  launcher's updater and its sources clone already use) and the launcher's
-  first release.
+- [x] Publish the repository (`erikomis/resistance3-recomp`).
+- [ ] The launcher's first release.
 - [ ] RecompLauncher: the profile (`recomplauncher.json`), the launcher's
   headless `--prepare` and `scripts/package-recomplauncher.sh` are in; a
   release with that zip attached, a full prepare on a clean Mac, and the

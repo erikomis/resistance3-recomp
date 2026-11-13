@@ -7,7 +7,39 @@ vem a seguir. Mesmo formato dos roadmaps de Resistance: Fall of Man e
 Resistance 2. `[x]` = feito e verificado; `[ ]` = a fazer; "(em andamento)" =
 sendo trabalhado.
 
-## Resumo (2026-11-12)
+## Resumo (2026-11-13)
+
+- **Jogável no começo da campanha, a 30 fps.** O disco 01.00 está traduzido e
+  compilado; instalação, vídeos, menus, novo jogo, o porão de Haven e as ruas
+  de Haven rodam corretamente, com colisão, menu de pausa e save/continuar
+  funcionando.
+- **Desempenho:** o combate em Haven (a luta com o Stalker, a cena mais pesada
+  testada) fica no limite de 30 fps do jogo (mediana 30,0 fps, pior quadro
+  ~60 ms); a thread do RSX usa ~18-22 ms dos 33 ms de um quadro. O código SPU
+  roda quase todo traduzido (~0,0-0,1 M passos interpretados/s). Um teste de
+  15 minutos mantém a memória estável em 3,4-3,9 GB.
+- **Primeira visita a áreas novas:** shaders que o macOS nunca compilou ainda
+  custam algo na primeira vez; agora são montados em segundo plano (um efeito
+  pode aparecer uma fração de segundo atrasado em vez de o jogo travar), e
+  todo pipeline que o jogo monta é registrado e remontado no boot a partir de
+  um arquivo binário nas sessões seguintes.
+- **Ainda não validado:** a campanha depois de Haven, sessões acima de ~15
+  minutos, os patches de 60 fps / FOV, o disco europeu.
+
+## Até onde o jogo já foi jogado
+
+| Parte | Estado |
+|---|---|
+| Primeiro boot: instalação no HD (1,5 GB), logos, tela da Insomniac, aviso de auto-save | funciona |
+| Vídeo de carregamento, front end, Campanha -> Novo Jogo / Continuar | funciona |
+| Cinemáticas de abertura (no motor e em Bink) | funcionam |
+| Haven: porão (primeira gameplay), a família do Capelli, primeiras armas | funciona |
+| Ruas de Haven: luta com Chimera, Stalker com escudo, Bullseye e HE .44 Magnum | funciona, 30 fps |
+| Menu de pausa, diários, telas de arma | funcionam |
+| Recarregar checkpoint depois de morrer | funciona, sem pausas longas |
+| Depois das ruas de Haven (capítulos seguintes) | ainda não jogado |
+
+## Correções até agora, em detalhe
 
 - **Inicia, reproduz vídeos, abre o menu e joga a primeira fase.** O disco
   01.00 está traduzido e compilado, e o personagem anda no chão: as sondas de
@@ -204,22 +236,19 @@ sendo trabalhado.
   apertando X por ele, a primeira fase (`haven_town_ridge`) a 30 fps.
 - [x] Módulos SPU relocáveis: 184 módulos traduzidos por
   `tools/lift_r3_relocmods.py` (151 ig e 33 DEADDEAD).
-- [ ] Primeiro boot: logos, o aviso de auto-save, input (o Resistance 2
-  precisou de um hook de porta 0 no front-end), menus.
-- [ ] A instalação no HD da primeira vez: quais arquivos o Resistance 3
-  escreve, para o `PS3_GAMEDATA_MARKERS` e o `HDD_INSTALL_MARKERS` do
-  launcher; os nomes dos slots de save para o gerenciador de saves.
+- [x] Primeiro boot: logos, o aviso de auto-save, input, menus.
+- [x] Os marcadores da instalação no HD (`PS3_GAMEDATA_MARKERS`, o
+  `HDD_INSTALL_MARKERS` do launcher): sem reinstalar a cada boot.
 - [x] Vídeos Bink nas filas do igPm; cinemáticas 3D também aparecem.
 - [x] Colisão do jogador na primeira fase (janela de LS dos SPUs).
-- [ ] Validar a campanha a 30 fps do começo ao fim (a gameplay roda a
-  25-30 fps com parte do código SPU ainda interpretado).
+- [x] 30 fps nas ruas e no combate de Haven, código SPU traduzido.
+- [ ] Validar o resto da campanha a 30 fps (depois de Haven).
 - [ ] `tools/r3_survey.py --write-insn` e `RES_UNLOCK_FPS=1` / `RES_FOV`
   jogando; depois 60 fps.
 - [ ] Medir de novo o espaço em disco de uma instalação completa (o launcher
   e o `tools/install.sh` pedem 8 GB até lá).
-- [ ] Publicar o repositório (`erikomis/resistance3-recomp`, o nome que o
-  updater do launcher e o clone das fontes já usam) e a primeira release do
-  launcher.
+- [x] Publicar o repositório (`erikomis/resistance3-recomp`).
+- [ ] A primeira release do launcher.
 - [ ] RecompLauncher: o perfil (`recomplauncher.json`), o `--prepare` sem
   janela do launcher e o `scripts/package-recomplauncher.sh` já estão aqui;
   falta uma release com esse zip, um prepare completo num Mac limpo e a

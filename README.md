@@ -18,9 +18,10 @@ port's toolkit patch, scripts, runner and launcher. See
 [CREDITS.md](CREDITS.md).
 
 > [!WARNING]
-> **Not validated yet.** The game reaches its menus and first level, and the
-> player now walks on the ground there; the campaign has not been played
-> through. What comes next is in
+> **Playable at the start of the campaign; not validated past it.** Install,
+> menus, a new game, the Haven cellar and the Haven streets (including the
+> Stalker fight) play at the game's 30 fps; later chapters have not been
+> played yet. How far it has been played and what comes next are in
 > [ROADMAP.md](ROADMAP.md).
 >
 > **This repository contains no game data, no firmware, no Sony keys and
@@ -30,10 +31,13 @@ port's toolkit patch, scripts, runner and launcher. See
 
 ## Status
 
-As of 2026-11-12: the 01.00 disc is lifted and built. HDD installation,
-movies, menus, the first level and its collision work (the player used to
-fall through the floor: the SPU local-store window was missing). The
-campaign has not been validated.
+As of 2026-11-13: the 01.00 disc is lifted and built. HDD installation,
+movies, menus, New Game / Continue, the Haven cellar and the Haven streets
+work, with collision, the pause menu and checkpoint reloads; the Haven
+combat holds 30 fps (median 30.0 fps, worst frame ~60 ms), SPU code runs
+almost entirely lifted, and pipelines are recorded and prewarmed from a
+binary archive so later sessions do not stall on shaders. The campaign past
+Haven has not been played yet. Details in [ROADMAP.md](ROADMAP.md).
 
 - The toolkit: ps3recomp v0.17.0 (`a6d76c8`) plus
   `patches/ps3recomp-a6d76c8-resistance3.patch`, the Resistance 2 patch with

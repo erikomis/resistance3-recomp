@@ -18,9 +18,10 @@ toolkit, dos scripts, do runner e do launcher do port do Resistance 2. Veja
 [CREDITS.pt-BR.md](CREDITS.pt-BR.md).
 
 > [!WARNING]
-> **Ainda não validado.** O jogo chega aos menus e à primeira fase, e o
-> personagem agora anda no chão; a campanha ainda não foi jogada do começo ao
-> fim. O que vem a seguir está no
+> **Jogável no começo da campanha; não validado depois disso.** Instalação,
+> menus, novo jogo, o porão e as ruas de Haven (incluindo a luta com o
+> Stalker) rodam a 30 fps, o limite do jogo; os capítulos seguintes ainda não
+> foram jogados. Até onde o jogo foi e o que vem a seguir estão no
 > [ROADMAP.pt-BR.md](ROADMAP.pt-BR.md).
 >
 > **Este repositório não contém dados do jogo, firmware, chaves da Sony nem
@@ -30,10 +31,14 @@ toolkit, dos scripts, do runner e do launcher do port do Resistance 2. Veja
 
 ## Estado
 
-Em 2026-11-12: o disco 01.00 está traduzido e compilado. A instalação no HD,
-os vídeos, os menus, a primeira fase e a colisão funcionam (o personagem
-caía através do chão: faltava a janela de local store dos SPUs). A campanha
-ainda não foi validada.
+Em 2026-11-13: o disco 01.00 está traduzido e compilado. A instalação no HD,
+os vídeos, os menus, Novo Jogo / Continuar, o porão e as ruas de Haven
+funcionam, com colisão, menu de pausa e recarga de checkpoint; o combate em
+Haven fica em 30 fps (mediana 30,0 fps, pior quadro ~60 ms), o código SPU roda
+quase todo traduzido, e os pipelines são registrados e pré-montados a partir
+de um arquivo binário, então as sessões seguintes não travam em shaders. A
+campanha depois de Haven ainda não foi jogada. Detalhes no
+[ROADMAP.pt-BR.md](ROADMAP.pt-BR.md).
 
 - O toolkit: ps3recomp v0.17.0 (`a6d76c8`) mais
   `patches/ps3recomp-a6d76c8-resistance3.patch`, o patch do Resistance 2 com

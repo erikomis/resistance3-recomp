@@ -55227,10 +55227,10 @@ index 0000000..52d06b5
 +#endif /* PS3RECOMP_HOST_DISPLAY_H */
 diff --git a/tools/host_window/host_window.m b/tools/host_window/host_window.m
 new file mode 100644
-index 0000000..756d388
+index 0000000..96d3b7c
 --- /dev/null
 +++ b/tools/host_window/host_window.m
-@@ -0,0 +1,944 @@
+@@ -0,0 +1,948 @@
 +/*
 + * ps3recomp - host window: one window across an executable swap (macOS)
 + *
@@ -55581,6 +55581,10 @@ index 0000000..756d388
 +    if (!g.ds_kernel) {
 +        g.ds_kernel = [[lanczos alloc] initWithDevice:g.dev];
 +        if (!g.ds_kernel) { downscale_fail("not supported on this GPU"); return nil; }
++        /* The filter's taps past the picture's edge read the edge pixel, not
++         * black: with MPS's default (zero) the outer row and column came out
++         * darker, a 1-pixel frame (a white picture gave 223..245 there). */
++        ((MPSImageLanczosScale*)g.ds_kernel).edgeMode = MPSImageEdgeModeClamp;
 +    }
 +    if (!g.ds_out || g.ds_out.width != ow || g.ds_out.height != oh || g.ds_out.pixelFormat != src.pixelFormat) {
 +        MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat
@@ -56233,10 +56237,10 @@ index 0000000..95df325
 +}
 diff --git a/tools/host_window/test_host_window_downscale.m b/tools/host_window/test_host_window_downscale.m
 new file mode 100644
-index 0000000..90fc132
+index 0000000..250291d
 --- /dev/null
 +++ b/tools/host_window/test_host_window_downscale.m
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,137 @@
 +/* The window host's supersampling path (PS3_DOWNSCALE, host_window.m) with no
 + * window: a picture three times the window's size reduced through
 + * downscale(). A one-pixel checkerboard -- the finest detail a picture holds,
@@ -56316,6 +56320,47 @@ index 0000000..90fc132
 +        free(px);
 +        printf("test_host_window_downscale: checkerboard 192x108 -> 64x36 gives %d..%d\n", lo, hi);
 +        assert(lo > 80 && hi < 175);            /* grey, not black or white pixels */
++
++        /* a solid white picture stays white to the last row and column: the
++         * filter's taps past the edge read the edge (MPSImageEdgeModeClamp),
++         * not black, which left a darker 1-pixel frame */
++        {
++            const NSUInteger W = 192, H = 108, w = 64, h = 36;
++            MTLTextureDescriptor* wd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
++                                                                                          width:W height:H mipmapped:NO];
++            wd.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
++            wd.storageMode = MTLStorageModeShared;
++            id<MTLTexture> white = [g.dev newTextureWithDescriptor:wd];
++            uint8_t* wp = malloc(W * H * 4);
++            memset(wp, 255, W * H * 4);
++            [white replaceRegion:MTLRegionMake2D(0, 0, W, H) mipmapLevel:0 withBytes:wp bytesPerRow:W * 4];
++            free(wp);
++            cb = [g.queue commandBuffer];
++            id<MTLTexture> wout = downscale(cb, white, w, h);
++            assert(wout);
++            id<MTLTexture> wback = checker(w, h, MTLTextureUsageShaderRead);
++            b = [cb blitCommandEncoder];
++            [b copyFromTexture:wout toTexture:wback];
++            [b endEncoding];
++            [cb commit];
++            [cb waitUntilCompleted];
++            uint8_t* o = malloc(w * h * 4);
++            [wback getBytes:o bytesPerRow:w * 4 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
++            int lo = 255;
++            for (NSUInteger y = 0; y < h; y++)
++                for (NSUInteger x = 0; x < w; x++)
++                    for (int c = 0; c < 3; c++) {
++                        const int v = o[(y * w + x) * 4 + c];
++                        if (v < lo) lo = v;
++                    }
++            free(o);
++            printf("test_host_window_downscale: solid white 192x108 -> 64x36, darkest pixel %d (edges included)\n", lo);
++            assert(lo >= 254);
++            /* back to the checkerboard's size for the reuse check below */
++            cb = [g.queue commandBuffer];
++            out = downscale(cb, src, 64, 36);
++            [cb commit]; [cb waitUntilCompleted];
++        }
 +
 +        /* the same sizes reuse the output */
 +        id<MTLTexture> again = out;

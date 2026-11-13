@@ -72,6 +72,19 @@ worked on.
   #757 (branch bits read at run time) was reverted too: it changes every
   vertex program's translation, so a player's whole shader cache went stale
   and recompiled during play (127 builds queued, 8-20 fps, freezes).
+- RSX thread in Haven combat: 45 -> 18 ms a frame, GPU flush waits 11 ->
+  0.2 ms a frame, frame median 30.0 fps and the worst frame 60 ms (it was
+  314). The Metal backend's texture-view table (256) filled in combat and a
+  depth-buffer read silently fell back to a guest-memory round trip every
+  frame (~500 depth stores per 120 frames); the table holds 2048 now and
+  evicts its least recently used view (`PS3RECOMP_METAL_MAX_VIEWS`,
+  `PS3RECOMP_METAL_VIEW_EVICT`). Also: depth copies kept at two sizes, an
+  own-zeta depth read takes the GPU snapshot (`PS3RECOMP_ENG_ZSNAP_OWN`), a
+  4-lane texture change hash (`PS3RECOMP_ENG_TEXHASH_LANES`), prefetch in
+  the sparse hash, two clock reads a draw instead of four, a direct path for
+  plain NV4097 words in the FIFO walker (`GCM_FAST_WORDS`), and a "round
+  trips by cause" log line. The shader compile budget is a leaky bucket
+  (`PS3_SHADER_BUDGET_WINDOW=1` restores the 100 ms window).
 - Shader stalls in new areas: every pipeline built at once is charged to
   the compile budget (functions and pipeline state), not only disk-cache
   functions (`PS3_SHADER_SYNC_BUDGET_ALL`, on). With an empty shader cache

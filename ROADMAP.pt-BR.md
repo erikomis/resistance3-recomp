@@ -75,6 +75,20 @@ sendo trabalhado.
   tradução de todo programa de vértice, então o cache de shaders inteiro do
   jogador ficava velho e recompilava durante o jogo (127 compilações na fila,
   8-20 fps, congelamentos).
+- Thread do RSX no combate em Haven: 45 -> 18 ms por quadro, esperas pela
+  GPU 11 -> 0,2 ms por quadro, mediana de 30,0 fps e o pior quadro em 60 ms
+  (eram 314). A tabela de views de textura do backend Metal (256) enchia no
+  combate e uma leitura do depth buffer caía calada num caminho pela memória
+  do jogo a cada quadro (~500 gravações de profundidade a cada 120 quadros);
+  agora são 2048 com descarte da menos usada (`PS3RECOMP_METAL_MAX_VIEWS`,
+  `PS3RECOMP_METAL_VIEW_EVICT`). Também: cópias de profundidade em dois
+  tamanhos, leitura do próprio zeta pelo snapshot da GPU
+  (`PS3RECOMP_ENG_ZSNAP_OWN`), hash de textura em 4 trilhas
+  (`PS3RECOMP_ENG_TEXHASH_LANES`), prefetch no hash esparso, duas leituras de
+  relógio por draw em vez de quatro, caminho direto para palavras NV4097
+  comuns na FIFO (`GCM_FAST_WORDS`) e uma linha de log "round trips by
+  cause". O orçamento de compilação de shader virou um balde que vaza
+  (`PS3_SHADER_BUDGET_WINDOW=1` volta à janela de 100 ms).
 - Travadas de shader em áreas novas: toda montagem de pipeline feita na hora
   é cobrada do orçamento de compilação (funções e estado do pipeline), não só
   as funções vindas do disco (`PS3_SHADER_SYNC_BUDGET_ALL`, ligado). Com o

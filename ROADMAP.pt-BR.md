@@ -25,8 +25,9 @@ sendo trabalhado.
   pode aparecer uma fração de segundo atrasado em vez de o jogo travar), e
   todo pipeline que o jogo monta é registrado e remontado no boot a partir de
   um arquivo binário nas sessões seguintes.
-- **Ainda não validado:** a campanha depois de Haven, sessões acima de ~15
-  minutos, os patches de 60 fps / FOV, o disco europeu.
+- **Ainda não validado:** jogar cada capítulo seguinte até o fim (todos
+  carregam e renderizam; veja abaixo), sessões acima de ~15 minutos, os
+  patches de 60 fps / FOV, o disco europeu.
 
 ## Até onde o jogo já foi jogado
 
@@ -39,7 +40,8 @@ sendo trabalhado.
 | Ruas de Haven: luta com Chimera, Stalker com escudo, Bullseye e HE .44 Magnum | funciona, 30 fps |
 | Menu de pausa, diários, telas de arma | funcionam |
 | Recarregar checkpoint depois de morrer | funciona, sem pausas longas |
-| Depois das ruas de Haven (capítulos seguintes) | ainda não jogado |
+| Todos os capítulos seguintes, começando de um save editado (`tools/r3_save.py`): Haven ridge/defense/barco, St. Louis resgate e emboscada, a mina (chegada e trem), a prisão Penn, Nova York chegada e terraformador | todos carregam e renderizam (cinemáticas e primeira gameplay) a 26-30 fps; sem trava, desalinhamento da FIFO ou crash em 5 minutos de cada |
+| Jogar cada capítulo até o fim | ainda não feito |
 
 ## Correções até agora, em detalhe
 

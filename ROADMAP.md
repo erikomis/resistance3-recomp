@@ -25,8 +25,9 @@ worked on.
   appear a fraction of a second late instead of the game stalling), and every
   pipeline the game builds is recorded and rebuilt at boot from a binary
   archive in later sessions.
-- **Not validated yet:** the campaign past Haven, sessions over ~15 minutes,
-  the 60 fps / FOV patches, the European disc.
+- **Not validated yet:** playing each later chapter through (all of them
+  load and render; see below), sessions over ~15 minutes, the 60 fps / FOV
+  patches, the European disc.
 
 ## How far the game has been played
 
@@ -39,7 +40,8 @@ worked on.
 | Haven streets: Chimera fight, Stalker with its shield, Bullseye and HE .44 Magnum | works, 30 fps |
 | Pause menu, journals, weapon screens | work |
 | Checkpoint reloads after dying | work, no long stalls |
-| Beyond the Haven streets (later chapters) | not played yet |
+| Every later chapter, started from an edited save (`tools/r3_save.py`): Haven ridge/defense/boat, St. Louis rescue and ambush, the mine approach and train, the Penn prison, New York approach and terraformer | all load and render (cinematics and first gameplay) at 26-30 fps; no hang, FIFO derail or crash in a 5-minute run each |
+| Playing each chapter through to its end | not done yet |
 
 ## Fixes so far, in detail
 

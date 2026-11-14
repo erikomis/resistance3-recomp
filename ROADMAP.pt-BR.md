@@ -248,9 +248,11 @@ sendo trabalhado.
 - [x] 30 fps nas ruas e no combate de Haven, código SPU traduzido.
 - [ ] Validar o resto da campanha a 30 fps (depois de Haven).
 - [x] `RES_UNLOCK_FPS=1` jogando (o patch já é traduzido nas duas formas): a
-  luta em Haven fica em ~41 fps de média (mediana 38, 10% piores em 32)
-  contra 30 fixos sem ele, imagem correta. A thread do RSX, ~21 ms por
-  quadro, é o que impede os 60.
+  luta em Haven fica em ~48 fps de média (mediana 48, 10% piores em 39)
+  contra 30 fixos sem ele, imagem correta (eram 41 antes de a thread do RSX
+  cair de ~21 para ~17 ms por quadro: o log da leitura-sombra é pré-filtrado,
+  sequências de palavras de estado vão ao motor numa chamada só, memos de
+  programa maiores, faixas de índice direto dos índices do jogo).
 - [ ] 60 fps: a thread do RSX abaixo de 16 ms por quadro; `RES_FOV` jogando.
 - [ ] Medir de novo o espaço em disco de uma instalação completa (o launcher
   e o `tools/install.sh` pedem 8 GB até lá).

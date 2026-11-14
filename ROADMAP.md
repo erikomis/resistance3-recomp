@@ -235,9 +235,11 @@ worked on.
 - [x] 30 fps in the Haven streets and combat, SPU code lifted.
 - [ ] Validate the rest of the campaign at 30 fps (past Haven).
 - [x] `RES_UNLOCK_FPS=1` in play (the patch is lifted in both forms): the
-  Haven fight runs at ~41 fps on average (median 38, 10th percentile 32)
-  against a steady 30 without it, picture correct. The RSX thread, ~21 ms
-  a frame, is what keeps it from 60.
+  Haven fight runs at ~48 fps on average (median 48, 10th percentile 39)
+  against a steady 30 without it, picture correct (it was 41 before the
+  RSX thread went from ~21 to ~17 ms a frame: the shadow-fetch log is
+  pre-filtered, runs of plain state words go to the engine in one call,
+  wider program memos, index ranges straight from the guest's indices).
 - [ ] 60 fps: the RSX thread under 16 ms a frame; `RES_FOV` in play.
 - [ ] Re-measure the disk space a full install takes (the launcher and
   `tools/install.sh` ask for 8 GB until then).

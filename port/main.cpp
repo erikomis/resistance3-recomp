@@ -743,6 +743,17 @@ int main(int argc, char** argv)
 #else
     setenv("PS3RECOMP_ENG_SURFACE_SLOTS", "256", 0);
 #endif
+    /* The pipeline cache's MTLBinaryArchive is off: after a few sessions its
+     * load took 6-15 s and then minutes at 100% of a core (Metal's
+     * flatbuffers serialiser), merges took 7-45 s, and the same 9 pipelines
+     * were never archived, so every boot wrote another chunk. The record and
+     * the boot prewarm (PS3_PIPELINE_RECORD / _PREWARM) stay on; macOS's own
+     * pipeline cache makes their rebuilds cheap. PS3_PIPELINE_ARCHIVE=1 wins. */
+#ifdef _WIN32
+    if (!getenv("PS3_PIPELINE_ARCHIVE")) _putenv_s("PS3_PIPELINE_ARCHIVE", "0");
+#else
+    setenv("PS3_PIPELINE_ARCHIVE", "0", 0);
+#endif
     /* The first boot's HDD install is done when the first and the last file
      * Resistance 3's installer writes are there (the toolkit's default pair
      * is Resistance 2's, which R3 never writes, so every boot asked "The game

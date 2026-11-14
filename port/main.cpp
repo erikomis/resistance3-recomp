@@ -717,6 +717,12 @@ int main(int argc, char** argv)
 #else
     setenv("PS3_CAMERA", "0", 0);
 #endif
+    /* The DualSense / DualShock 4 light bar in the series' orange (the
+     * launcher's "game's colour"); PS3_PAD_LIGHT=off or another RRGGBB
+     * overrides it. */
+#ifndef _WIN32
+    setenv("PS3_PAD_LIGHT", "ff5a00", 0);
+#endif
     /* The RSX engine's texture cache: Haven's streets use more than the
      * toolkit's default 1024 textures at once, so it evicted and re-uploaded
      * ~9,500 of them every 120 frames (~500 MB, 100-240 ms of uploads in a

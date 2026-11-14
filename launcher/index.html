@@ -677,6 +677,38 @@
             <span class="opt-text"><label class="opt-label" for="rumble-strength" data-i18n="settings.rumbleStrength">Intensidade</label></span>
             <span class="slider"><input id="rumble-strength" type="range" min="0" max="200" step="10" /><output id="rumble-strength-out"></output></span>
           </div>
+          <label class="opt" data-feature="PS3_PAD_ADAPTIVE">
+            <span class="opt-text"><span class="opt-label" data-i18n="settings.adaptive"></span><span class="hint" data-i18n="settings.adaptiveHint"></span></span>
+            <span class="switch"><input id="adaptive-on" type="checkbox" /><i></i></span>
+          </label>
+          <div class="opt" data-feature="PS3_PAD_GYRO">
+            <span class="opt-text"><label class="opt-label" for="pad-light" data-i18n="settings.padLight"></label><span class="hint" data-i18n="settings.padLightHint"></span></span>
+            <select id="pad-light">
+              <option value="" data-i18n="settings.padLightGame"></option>
+              <option value="ff0000" data-i18n="settings.padLightRed"></option>
+              <option value="0040ff" data-i18n="settings.padLightBlue"></option>
+              <option value="ffffff" data-i18n="settings.padLightWhite"></option>
+              <option value="8000ff" data-i18n="settings.padLightPurple"></option>
+              <option value="off" data-i18n="settings.padLightOff"></option>
+            </select>
+          </div>
+          <label class="opt sub" data-feature="PS3_PAD_GYRO">
+            <span class="opt-text"><span class="opt-label" data-i18n="settings.padLightHit"></span></span>
+            <span class="switch"><input id="pad-light-hit" type="checkbox" /><i></i></span>
+          </label>
+          <div class="opt" data-feature="PS3_PAD_GYRO">
+            <span class="opt-text"><label class="opt-label" for="gyro" data-i18n="settings.gyro"></label><span class="hint" data-i18n="settings.gyroHint"></span></span>
+            <select id="gyro">
+              <option value="0" data-i18n="settings.gyroOff"></option>
+              <option value="60" data-i18n="settings.gyroLow"></option>
+              <option value="100" data-i18n="settings.gyroMid"></option>
+              <option value="160" data-i18n="settings.gyroHigh"></option>
+            </select>
+          </div>
+          <label class="opt sub" data-feature="PS3_PAD_GYRO">
+            <span class="opt-text"><span class="opt-label" data-i18n="settings.gyroAlways"></span><span class="hint" data-i18n="settings.gyroAlwaysHint"></span></span>
+            <span class="switch"><input id="gyro-always" type="checkbox" /><i></i></span>
+          </label>
         </section>
 
         <section class="section">

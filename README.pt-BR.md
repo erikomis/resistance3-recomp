@@ -170,6 +170,39 @@ do kernel, eventos de `sys_lwcond`, RSX acordando a cada 50 µs, estéreo com
 limitador); cada um tem uma chave para desligar e comparar, documentada no
 `port/main.cpp` e no `tools/play.sh`.
 
+## Jogando com o controle de PS5 (DualSense)
+
+Ligue o DualSense com um cabo USB-C ou pareie por Bluetooth (Ajustes do
+Sistema > Bluetooth; segure PS e Create até a barra de luz piscar). O jogo
+reconhece o controle a qualquer momento, e um controle Bluetooth que cai e
+volta retoma o mesmo lugar de jogador.
+
+> [!WARNING]
+> **Feche o Steam enquanto joga.** Com o Steam Input ligado, o Steam toma
+> conta do DualSense e reescreve o que o jogo manda para ele: os gatilhos
+> adaptáveis e a barra de luz não fazem nada (a vibração continua). Feche o
+> Steam, ou desligue o suporte a controles PlayStation em Steam > Configurações
+> > Controle. O log do jogo avisa quando o Steam está aberto.
+
+Os botões são os do controle de PS3, nos mesmos lugares (Create é o SELECT,
+Options é o START). O que o DualSense acrescenta, na página Controles do
+launcher, em Vibração:
+
+| | |
+| --- | --- |
+| **Gatilhos adaptáveis** | O R2 tem o clique de um gatilho de arma: atira no clique, mais ou menos na metade (`PS3_PAD_FIRE_AT` muda o ponto), e vibra enquanto você atira; o L2 tem uma resistência leve. |
+| **Vibração** | Intensidade de 0 a 200% (acima de 100% reforça as vibrações fracas). |
+| **Barra de luz** | Laranja por padrão, ou vermelha, azul, branca, roxa, desligada; fica vermelha quando você leva tiro e com explosões (dá para desligar). |
+| **Luzes de jogador** | Mostram qual jogador é o controle. |
+| **Mira por giroscópio** | Desligada, Baixa, Média ou Alta. Gire e incline o controle para ajustar a mira enquanto segura o gatilho esquerdo; "Sempre ligada" usa o tempo todo. O analógico direito continua funcionando. |
+| **Botão de mudo** | Desliga e liga o som do jogo; a luz do próprio botão mostra que está mudo (`PS3_PAD_MUTE_BUTTON=0` desliga isso). |
+| **Bateria** | O log do jogo avisa quando a bateria fica fraca e quando está quase no fim (`PS3_PAD_BATTERY=0` desliga isso). |
+| **Som pelo controle** | Com o cabo USB o DualSense vira uma saída de som: escolha "DualSense Wireless Controller" como saída de áudio no launcher para ouvir o jogo no alto-falante dele ou no fone ligado nele. |
+
+O botão de mudo só faz isso enquanto você não der outra função a ele nos
+controles. Um DualShock 4 tem a vibração, a barra de luz e a mira por
+giroscópio; um controle Xbox tem a vibração.
+
 ## Atualizando o patch do toolkit
 
 Mude o toolkit em `./ps3recomp` e rode:

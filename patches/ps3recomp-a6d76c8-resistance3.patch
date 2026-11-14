@@ -529,7 +529,7 @@ index 0000000..40570da
 +
 +#endif /* PS3EMU_PS3_ENV_ONCE_H */
 diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
-index 6f76df8..8da653d 100644
+index 6f76df8..7bd3962 100644
 --- a/libs/audio/cellAudio.c
 +++ b/libs/audio/cellAudio.c
 @@ -15,11 +15,13 @@
@@ -653,7 +653,7 @@ index 6f76df8..8da653d 100644
  
      SDL_PauseAudioDevice(s_sdl_audio_dev, 0); /* Start playback */
      return 0;
-@@ -427,6 +505,295 @@ static inline float ld_be_f32(const float* p)
+@@ -427,6 +505,306 @@ static inline float ld_be_f32(const float* p)
      return f;
  }
  
@@ -825,6 +825,18 @@ index 6f76df8..8da653d 100644
 +    fflush(stdout);
 +}
 +
++/* The host output muted (PS3_AUDIO_MUTE at start; the DualSense's mute
++ * button changes it while the game runs). Only the host output: the title's
++ * mixing and pacing go on as before. -1 = not read yet. */
++static _Atomic int s_host_mute = -1;
++int cellAudio_host_muted(void)
++{
++    int m = s_host_mute;
++    if (m < 0) { m = getenv("PS3_AUDIO_MUTE") ? 1 : 0; s_host_mute = m; }
++    return m;
++}
++void cellAudio_host_set_mute(int on) { s_host_mute = on ? 1 : 0; }
++
 +/* Hand one mixed block to the host device. Shared by the Windows and POSIX
 + * mixer loops so the debug taps behave the same on both:
 + *   PS3_AUDIO_DUMP=<file.wav>  the final mix as a float WAV (above)
@@ -845,8 +857,7 @@ index 6f76df8..8da653d 100644
 +    { static FILE* _wf = (FILE*)-1;
 +      if (_wf == (FILE*)-1) { const char* e = getenv("AUDIO_WAV"); _wf = e ? fopen(e, "wb") : NULL; }
 +      if (_wf) { fwrite(s_mix_buffer, sizeof(float), CELL_AUDIO_BLOCK_SAMPLES * 2, _wf); fflush(_wf); } }
-+    { static int mute = -1; if (mute < 0) mute = getenv("PS3_AUDIO_MUTE") ? 1 : 0;
-+      if (mute) memset(s_mix_buffer, 0, sizeof(s_mix_buffer)); }
++    if (cellAudio_host_muted()) memset(s_mix_buffer, 0, sizeof(s_mix_buffer));
 +    audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
 +}
 +
@@ -949,7 +960,7 @@ index 6f76df8..8da653d 100644
  /* Mix one block from all active ports into s_mix_buffer (stereo float) */
  static void audio_mix_one_block(void)
  {
-@@ -439,7 +806,7 @@ static void audio_mix_one_block(void)
+@@ -439,7 +817,7 @@ static void audio_mix_one_block(void)
          /* Diagnostic: a port that HOLDS PCM but was never started is inaudible
           * by design -- flag it once so "no PortStart" vs "no data" is decidable
           * from the log (LBP's Bink movie audio port sat exactly there). */
@@ -958,7 +969,7 @@ index 6f76df8..8da653d 100644
              static u8 warned[CELL_AUDIO_PORT_MAX];
              if (!warned[p]) {
                  u32 probe = (u32)(port->param.nBlock * CELL_AUDIO_BLOCK_SAMPLES *
-@@ -459,7 +826,7 @@ static void audio_mix_one_block(void)
+@@ -459,7 +837,7 @@ static void audio_mix_one_block(void)
          u32 nch    = (u32)port->param.nChannel;
          u32 nblock = (u32)port->param.nBlock;
          float level = port->param.level;
@@ -967,7 +978,7 @@ index 6f76df8..8da653d 100644
          if (level > 1.0f) level = 1.0f;
  
          /* Read one block at the current read_index */
-@@ -486,31 +853,11 @@ static void audio_mix_one_block(void)
+@@ -486,31 +864,11 @@ static void audio_mix_one_block(void)
                          p, (unsigned long long)port->read_index, block_idx, map);
              } } }
  
@@ -980,7 +991,10 @@ index 6f76df8..8da653d 100644
 -                /* Mono: duplicate to both channels */
 -                left = right = ld_be_f32(&src[s]) * level;
 -            }
--
++        if (s_stats > 0)
++            audio_level_add(&s_lvl_port[p], src, CELL_AUDIO_BLOCK_SAMPLES * nch, 1, nch);
++        port->was_playing = !audio_block_is_zero(src, nch);
+ 
 -            /* If 7.1, mix center and other channels into stereo */
 -            if (nch == 8) {
 -                float center = ld_be_f32(&src[s * 8 + 2]) * level * 0.707f;
@@ -992,10 +1006,7 @@ index 6f76df8..8da653d 100644
 -                left  += center + lfe + rl + sl;
 -                right += center + lfe + rr + sr;
 -            }
-+        if (s_stats > 0)
-+            audio_level_add(&s_lvl_port[p], src, CELL_AUDIO_BLOCK_SAMPLES * nch, 1, nch);
-+        port->was_playing = !audio_block_is_zero(src, nch);
- 
+-
 -            s_mix_buffer[s * 2 + 0] += left;
 -            s_mix_buffer[s * 2 + 1] += right;
 -        }
@@ -1003,7 +1014,7 @@ index 6f76df8..8da653d 100644
  
          /* Firmware clears a ring-buffer block after consuming it. Besides
           * preventing stale PCM from replaying when a producer stalls, the
-@@ -527,10 +874,22 @@ static void audio_mix_one_block(void)
+@@ -527,10 +885,22 @@ static void audio_mix_one_block(void)
  
      mutex_unlock(&s_audio_mutex);
  
@@ -1028,7 +1039,7 @@ index 6f76df8..8da653d 100644
      }
  }
  
-@@ -592,12 +951,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -592,12 +962,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
                  float a = s_mix_buffer[i]; if (a < 0) a = -a; if (a > pk) pk = a; }
              if ((++_n % 200) == 0 || (pk > 0.001f && _n < 40))
                  fprintf(stderr, "[audio-peak] block#%u peak=%.4f\n", _n, pk); } }
@@ -1042,7 +1053,7 @@ index 6f76df8..8da653d 100644
          /* AUDIO_RATE=1: blocks mixed vs real time, and frames dropped. */
          { static int on = -1; if (on < 0) on = getenv("AUDIO_RATE") ? 1 : 0;
            if (on) { static ULONGLONG t0; static unsigned n, z; static unsigned long long d0;
-@@ -622,22 +976,105 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+@@ -622,22 +987,105 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
      return 0;
  }
  #else
@@ -1156,7 +1167,7 @@ index 6f76df8..8da653d 100644
      }
  
      printf("[cellAudio] Mixing thread stopped\n");
-@@ -727,6 +1164,7 @@ s32 cellAudioInit(void)
+@@ -727,6 +1175,7 @@ s32 cellAudioInit(void)
      { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
        s_audio_start_us = (u64)ts.tv_sec * 1000000ULL + (u64)ts.tv_nsec / 1000ULL; }
  #endif
@@ -1164,7 +1175,7 @@ index 6f76df8..8da653d 100644
      if (audio_start_mix_thread() < 0) {
          printf("[cellAudio] WARNING: Could not start mixing thread\n");
      }
-@@ -744,6 +1182,7 @@ s32 cellAudioQuit(void)
+@@ -744,6 +1193,7 @@ s32 cellAudioQuit(void)
  
      audio_stop_mix_thread();
      audio_backend_shutdown();
@@ -1172,7 +1183,7 @@ index 6f76df8..8da653d 100644
  
      /* Port buffers live in the guest vm_base arena (bump-allocated, not host
       * malloc) -- just drop the references; never free() them. */
-@@ -772,8 +1211,17 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
+@@ -772,8 +1222,17 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
  
      u64 nch  = vm_read64(param_ea + 0);   /* nChannel */
      u64 nblk = vm_read64(param_ea + 8);   /* nBlock   */
@@ -1192,7 +1203,7 @@ index 6f76df8..8da653d 100644
  
      if (nch != CELL_AUDIO_PORT_2CH && nch != CELL_AUDIO_PORT_8CH)
          return CELL_AUDIO_ERROR_PARAM;
-@@ -801,8 +1249,12 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
+@@ -801,8 +1260,12 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
      port->running = 0;
      /* Store the decoded (host-endian) param values, not the raw BE guest bytes. */
      memset(&port->param, 0, sizeof(port->param));
@@ -1205,7 +1216,7 @@ index 6f76df8..8da653d 100644
      port->read_index  = 0;
      port->write_index = 0;
  
-@@ -840,7 +1292,7 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
+@@ -840,7 +1303,7 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
  
  s32 cellAudioPortClose(u32 portNum)
  {
@@ -1214,7 +1225,7 @@ index 6f76df8..8da653d 100644
  
      if (!s_audio_initialized)
          return CELL_AUDIO_ERROR_NOT_INIT;
-@@ -869,7 +1321,7 @@ s32 cellAudioPortClose(u32 portNum)
+@@ -869,7 +1332,7 @@ s32 cellAudioPortClose(u32 portNum)
  
  s32 cellAudioPortStart(u32 portNum)
  {
@@ -1223,7 +1234,7 @@ index 6f76df8..8da653d 100644
  
      if (!s_audio_initialized)
          return CELL_AUDIO_ERROR_NOT_INIT;
-@@ -882,6 +1334,7 @@ s32 cellAudioPortStart(u32 portNum)
+@@ -882,6 +1345,7 @@ s32 cellAudioPortStart(u32 portNum)
  
      mutex_lock(&s_audio_mutex);
      s_ports[portNum].running = 1;
@@ -1231,7 +1242,7 @@ index 6f76df8..8da653d 100644
      mutex_unlock(&s_audio_mutex);
  
      return CELL_OK;
-@@ -889,7 +1342,7 @@ s32 cellAudioPortStart(u32 portNum)
+@@ -889,7 +1353,7 @@ s32 cellAudioPortStart(u32 portNum)
  
  s32 cellAudioPortStop(u32 portNum)
  {
@@ -1240,7 +1251,7 @@ index 6f76df8..8da653d 100644
  
      if (!s_audio_initialized)
          return CELL_AUDIO_ERROR_NOT_INIT;
-@@ -907,6 +1360,45 @@ s32 cellAudioPortStop(u32 portNum)
+@@ -907,6 +1371,45 @@ s32 cellAudioPortStop(u32 portNum)
      return CELL_OK;
  }
  
@@ -1287,7 +1298,7 @@ index 6f76df8..8da653d 100644
  {
      uint32_t tag_ea = (uint32_t)(uintptr_t)tag;
 diff --git a/libs/audio/cellAudio.h b/libs/audio/cellAudio.h
-index 696ed35..4e7c283 100644
+index 696ed35..70a6b88 100644
 --- a/libs/audio/cellAudio.h
 +++ b/libs/audio/cellAudio.h
 @@ -87,6 +87,10 @@ s32 cellAudioPortStart(u32 portNum);
@@ -1301,6 +1312,17 @@ index 696ed35..4e7c283 100644
  /* NID: 0x04AF134E */
  s32 cellAudioCreateNotifyEventQueue(u32* id, u64* key);
  
+@@ -115,6 +119,10 @@ s32 cellAudioSetPersonalDevice(s32 iPersonalStream, s32 iDevice);
+ /* NID: 0x28BC1409 */
+ s32 cellAudioUnsetPersonalDevice(s32 iPersonalStream);
+ 
++/* Host-side output controls (host only; the title sees nothing change). */
++int  cellAudio_host_muted(void);
++void cellAudio_host_set_mute(int on);
++
+ #ifdef __cplusplus
+ }
+ #endif
 diff --git a/libs/audio/tests/test_audio_pacing.c b/libs/audio/tests/test_audio_pacing.c
 new file mode 100644
 index 0000000..daa9682
@@ -3687,10 +3709,10 @@ index 76c5505..6cdac92 100644
  /* Constants */
  #define CELL_GEM_MAX_NUM   4
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
-index 7fa8cab..e046469 100644
+index 7fa8cab..6cef463 100644
 --- a/libs/input/cellPad.c
 +++ b/libs/input/cellPad.c
-@@ -4,10 +4,28 @@
+@@ -4,10 +4,41 @@
   * Reads real gamepad input from the host and translates to PS3 pad format.
   *
   * Backend selection:
@@ -3717,10 +3739,23 @@ index 7fa8cab..e046469 100644
 + *                               the window is key
 + *   PS3_PAD_SDL=0               ignore physical controllers
 + *   PS3_RUMBLE=0, PS3_RUMBLE_STRENGTH=<0-200>, PS3_RUMBLE_LOG=1   vibration
++ *   PS3_PAD_ADAPTIVE=0, PS3_PAD_FIRE_AT=<10-90>   DualSense adaptive triggers
++ *   PS3_PAD_LIGHT=<RRGGBB>|off, PS3_PAD_LIGHT_HIT=0   DualSense light bar
++ *   PS3_PAD_GYRO=<0-400>, PS3_PAD_GYRO_MODE=aim|always, PS3_PAD_GYRO_INVERT_Y=1
++ *                               DualSense / DualShock 4 gyro aim
++ *   PS3_PAD_MUTE_BUTTON=0       the DualSense's mute button does not mute the game
++ *   PS3_PAD_TOUCHPAD_MENU=0     a touchpad click does not open the in-game menu
++ *   PS3_PAD_BATTERY=0           no low-battery notice
++ *   PS3_OVERLAY_PAD=0           L3+R3 does not open the in-game menu
++ *
++ * The in-game menu (libs/video/ps3_overlay.mm, from the inFAMOUS 2 port)
++ * changes the input mode, the vibration, the mouse camera and the bindings
++ * live through the cellPad_host_* calls below, and while it is open every
++ * port is held neutral (see pad_overlay_gate).
   */
  
  #include <time.h>
-@@ -19,6 +37,8 @@
+@@ -19,6 +50,8 @@
  #include "../../runtime/platform/win32_compat.h"   /* GetTickCount64 on POSIX */
  #include "../../runtime/ppu/ppu_memory.h"   /* GUEST_PTR, vm_write*: guest EA -> host */
  #include "ps3emu/log_first.h"
@@ -3729,7 +3764,7 @@ index 7fa8cab..e046469 100644
  
  /* PAD_CLOCK=flips: PAD_SCRIPT and PAD_STICK times count guest flips instead of
   * wall-clock seconds. A loaded machine runs a title at a third of its usual
-@@ -53,8 +73,11 @@ static double pad_clock(unsigned long long t0_ms)
+@@ -53,10 +86,18 @@ static double pad_clock(unsigned long long t0_ms)
      #define WIN32_LEAN_AND_MEAN
    #endif
    #include <windows.h>
@@ -3741,8 +3776,15 @@ index 7fa8cab..e046469 100644
 -  #pragma comment(lib, "xinput.lib")
  #endif
  
++/* Gyro aim's "aim" state as the port reports it (cellPad_host_set_aiming):
++ * -1 until the first report, then 1 while the game aims. */
++static _Atomic int s_port_aiming = -1;
++void cellPad_host_set_aiming(int aiming) { s_port_aiming = aiming ? 1 : 0; }
++
  #if PAD_BACKEND_SDL2
-@@ -96,11 +119,110 @@ static PadHostState  s_host_state[PAD_MAX_HOST_PORTS];
+   #include <SDL2/SDL.h>
+ #endif
+@@ -96,11 +137,121 @@ static PadHostState  s_host_state[PAD_MAX_HOST_PORTS];
  /* Per-port "a report has arrived since your last read" flag; see cellPadGetData. */
  static int s_data_fresh[PAD_MAX_HOST_PORTS];
  
@@ -3790,6 +3832,8 @@ index 7fa8cab..e046469 100644
 +    return &s_map;
 +}
 +
++static void pad_lock(void);
++static void pad_unlock(void);
 +/* A stick axis from its two direction controls: `base` (centre, or the
 + * physical stick) when neither is held, otherwise full deflection (both held
 + * = 127, as two opposite keys always gave). */
@@ -3831,6 +3875,15 @@ index 7fa8cab..e046469 100644
 +static void pad_lock(void)     { while (!pad_lock_try()) SwitchToThread(); }
 +static void pad_unlock(void)   { __atomic_clear(&s_poll_lock, __ATOMIC_RELEASE); }
 +
++/* Raw controller inputs of every pad (bit n = SDL button n, 21/22 the
++ * triggers, as in pad_input_map.h), before the map: what the in-game menu
++ * binds when the player presses a button to rebind. */
++volatile uint32_t g_pad_overlay_raw;
++
++/* Counted up by a DualSense touchpad click (pad_extras_buttons). R3 has no
++ * in-game menu, so nothing reads it here. */
++volatile uint32_t g_pad_overlay_toggle;
++
 +/* CELL_PAD_STATUS_ASSIGN_CHANGES: a port whose reported connection changed
 + * since the title last asked (cellPadGetInfo/GetInfo2/PeriphGetInfo), as
 + * libpad reports a controller plugged in or taken away. */
@@ -3853,7 +3906,7 @@ index 7fa8cab..e046469 100644
  /* ---------------------------------------------------------------------------
   * Rumble (cellPadSetActDirect)
   *
-@@ -113,6 +235,12 @@ static int s_sdl_inited = 0;
+@@ -113,6 +264,12 @@ static int s_sdl_inited = 0;
   * PAD_RUMBLE_HOLD_MS. Large -> the host's low-frequency motor, small -> the
   * high-frequency one, which is how DualShock 4, DualSense and Xbox pads are
   * laid out too.
@@ -3866,7 +3919,7 @@ index 7fa8cab..e046469 100644
   * -------------------------------------------------------------------------*/
  
  #define PAD_RUMBLE_HOLD_MS     1000   /* one SDL request lasts this long ... */
-@@ -121,16 +249,43 @@ static int s_sdl_inited = 0;
+@@ -121,16 +278,43 @@ static int s_sdl_inited = 0;
  typedef struct {
      u16 lo, hi;                 /* what the host motors were last asked for */
      unsigned long long sent_ms; /* when (pad_now_ms), 0 = nothing to renew */
@@ -3915,7 +3968,7 @@ index 7fa8cab..e046469 100644
  }
  
  /* ---------------------------------------------------------------------------
-@@ -143,6 +298,39 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
+@@ -143,6 +327,39 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
  #define PAD_STICK_DEADZONE  7849
  #define PAD_TRIGGER_THRESHOLD 30
  
@@ -3955,7 +4008,7 @@ index 7fa8cab..e046469 100644
  static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
  {
      float normalized;
-@@ -240,7 +428,8 @@ static void pad_poll_xinput(void)
+@@ -240,7 +457,8 @@ static void pad_poll_xinput(void)
          XINPUT_STATE state;
          memset(&state, 0, sizeof(state));
  
@@ -3965,7 +4018,7 @@ index 7fa8cab..e046469 100644
          if (result != ERROR_SUCCESS) {
              s_host_state[i].connected = 0;
              continue;
-@@ -299,7 +488,8 @@ static void pad_poll_xinput(void)
+@@ -299,7 +517,8 @@ static void pad_poll_xinput(void)
  
  static void pad_init_backend(void)
  {
@@ -3975,7 +4028,7 @@ index 7fa8cab..e046469 100644
  }
  
  static void pad_shutdown_backend(void)
-@@ -333,79 +523,216 @@ static u8 pad_sdl_trigger_to_u8(int raw)
+@@ -333,79 +552,634 @@ static u8 pad_sdl_trigger_to_u8(int raw)
      return (u8)val;
  }
  
@@ -4013,6 +4066,421 @@ index 7fa8cab..e046469 100644
      r->sent_ms = on ? pad_now_ms() : 0;
  }
  
+-static void pad_poll_sdl2(void)
++/* ---- DualSense adaptive triggers ------------------------------------------
++ * A PS3 pad has no adaptive triggers; on a DualSense the triggers get a feel
++ * from what the title already does:
++ *   - the right trigger clicks like a gun's: resistance up to a break point,
++ *     then free travel. It reads as pressed only past the break (about half
++ *     way), so a shot goes off at the click;
++ *   - the left trigger has a light, even resistance (aiming);
++ *   - while the right trigger is held and the title runs the motors (a
++ *     weapon firing), the right trigger buzzes with them instead.
++ * The effects follow the physical triggers, whatever PS3 control the map
++ * binds them to. They go out through SDL_GameControllerSendEffect as the
++ * trigger blocks of the DualSense output report (the layout SDL's
++ * testgamecontroller sends), only when they change; both triggers are set
++ * free again when the controller is closed and when the process exits. A
++ * controller that refuses the effect (not a DualSense, or no enhanced mode)
++ * keeps free triggers and the usual press point.
++ *
++ *   PS3_PAD_ADAPTIVE=0        off: free triggers, pressed past 3000 as before
++ *   PS3_PAD_FIRE_AT=<10-90>   where the right trigger reads as pressed, in
++ *                             percent of its travel (50)
++ * -------------------------------------------------------------------------*/
++
++#define PAD_TRIGGER_PRESS       3000   /* SDL trigger value read as pressed (0-32767) */
++#define PAD_ADAPT_MIN_GAP_MS      30   /* effect reports at most this often */
++
++enum { PAD_TRIG_UNSET = -1, PAD_TRIG_OFF = 0, PAD_TRIG_WEAPON, PAD_TRIG_FEEDBACK, PAD_TRIG_BUZZ };
++
++typedef struct {
++    int on;                       /* a DualSense taking effects */
++    int right, left;              /* effect last sent (PAD_TRIG_*; BUZZ + amplitude) */
++    unsigned long long sent_ms;
++} PadAdaptive;
++static PadAdaptive s_adapt[PAD_MAX_HOST_PORTS];
++
++static int pad_adaptive_enabled(void)
+ {
+-    SDL_GameControllerUpdate();
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("PS3_PAD_ADAPTIVE"); on = !(e && e[0] == '0'); }
++    return on;
++}
+ 
+-    for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
+-        if (!s_sdl_controllers[i]) {
+-            /* Try to open newly connected controllers */
+-            if (SDL_IsGameController(i)) {
+-                s_sdl_controllers[i] = SDL_GameControllerOpen(i);
++/* The right trigger's press point (SDL units) while the gun click is on. */
++static int pad_adaptive_fire_at(void)
++{
++    static int at = -1;
++    if (at < 0) {
++        const char* e = getenv("PS3_PAD_FIRE_AT");
++        int pct = e && *e ? atoi(e) : 50;
++        if (pct < 10) pct = 10;
++        if (pct > 90) pct = 90;
++        at = 32767 * pct / 100;
++    }
++    return at;
++}
++
++/* One trigger's 11-byte effect block (the DualSense's own effect modes:
++ * 0x05 off, 0x21 feedback, 0x25 weapon, 0x26 vibration). Positions are the
++ * ten zones of the trigger's travel (0-9), strengths 1-8. */
++static void pad_trig_block(uint8_t out[11], int effect)
++{
++    memset(out, 0, 11);
++    if (effect == PAD_TRIG_WEAPON) {
++        /* resistance from zone 2, breaking at zone 5, strength 6 */
++        const unsigned zones = (1u << 2) | (1u << 5);
++        out[0] = 0x25;
++        out[1] = (uint8_t)(zones & 0xFF);
++        out[2] = (uint8_t)(zones >> 8);
++        out[3] = 6 - 1;
++    } else if (effect == PAD_TRIG_FEEDBACK) {
++        /* light even resistance from zone 1: strength 2 */
++        unsigned active = 0;
++        uint32_t force = 0;
++        for (int z = 1; z < 10; z++) { active |= 1u << z; force |= (uint32_t)(2 - 1) << (3 * z); }
++        out[0] = 0x21;
++        out[1] = (uint8_t)(active & 0xFF); out[2] = (uint8_t)(active >> 8);
++        out[3] = (uint8_t)force; out[4] = (uint8_t)(force >> 8);
++        out[5] = (uint8_t)(force >> 16); out[6] = (uint8_t)(force >> 24);
++    } else if (effect > PAD_TRIG_BUZZ) {
++        /* vibration over the whole travel, amplitude 1-8, 30 Hz */
++        const int amp = effect - PAD_TRIG_BUZZ;
++        unsigned active = 0;
++        uint32_t ampz = 0;
++        for (int z = 0; z < 10; z++) { active |= 1u << z; ampz |= (uint32_t)(amp - 1) << (3 * z); }
++        out[0] = 0x26;
++        out[1] = (uint8_t)(active & 0xFF); out[2] = (uint8_t)(active >> 8);
++        out[3] = (uint8_t)ampz; out[4] = (uint8_t)(ampz >> 8);
++        out[5] = (uint8_t)(ampz >> 16); out[6] = (uint8_t)(ampz >> 24);
++        out[9] = 30;
++    } else {
++        out[0] = 0x05;
++    }
++}
++
++/* Send both triggers' effects; 0 when the controller took them. `reset`
++ * also clears the power-save bits (valid_flag1 bit 1, byte 9): another
++ * program that had the controller (Steam Input) can leave the trigger
++ * motors and the light bar switched off in it, and nothing else turns them
++ * back on until the controller is powered off. */
++static int pad_trig_send_ex(SDL_GameController* gc, int right, int left, int reset)
++{
++    uint8_t st[47];   /* DS5EffectsState_t */
++    memset(st, 0, sizeof st);
++    st[0] = 0x04 | 0x08;   /* right and left trigger effects */
++    if (reset) { st[1] = 0x02; st[9] = 0x00; }
++    pad_trig_block(st + 10, right);
++    pad_trig_block(st + 21, left);
++    return SDL_GameControllerSendEffect(gc, st, (int)sizeof st);
++}
++static int pad_trig_send(SDL_GameController* gc, int right, int left) { return pad_trig_send_ex(gc, right, left, 0); }
++
++/* Another program holding the controller (macOS): Steam with Steam Input on
++ * rewrites the DualSense's output reports, so light bar and trigger effects
++ * never show. Said once. */
++#if defined(__APPLE__)
++#include <libproc.h>
++static void pad_warn_steam(void)
++{
++    static int said;
++    if (said) return;
++    said = 1;
++    int pids[4096];
++    const int n = proc_listallpids(pids, (int)sizeof pids);
++    for (int i = 0; i < n && i < 4096; i++) {
++        char name[64];
++        if (pids[i] > 0 && proc_name(pids[i], name, sizeof name) > 0 && !strcmp(name, "steam_osx")) {
++            fprintf(stderr, "[cellPad] Steam is running: with Steam Input on it takes over the DualSense and"
++                            " its light bar and adaptive triggers stay off. Quit Steam, or turn off"
++                            " PlayStation controller support in Steam > Settings > Controller\n");
++            return;
++        }
++    }
++}
++#else
++static void pad_warn_steam(void) {}
++#endif
++
++/* A new controller on port p: a DualSense gets its triggers' feel. */
++static void pad_adaptive_open(int p, SDL_GameController* gc)
++{
++    PadAdaptive* a = &s_adapt[p];
++    memset(a, 0, sizeof *a);
++    a->right = a->left = PAD_TRIG_UNSET;
++    if (!pad_adaptive_enabled() || SDL_GameControllerGetType(gc) != SDL_CONTROLLER_TYPE_PS5) return;
++    pad_warn_steam();
++    if (pad_trig_send_ex(gc, PAD_TRIG_WEAPON, PAD_TRIG_FEEDBACK, 1) != 0) {
++        fprintf(stderr, "[cellPad] port %d: adaptive triggers not available (%s)\n", p, SDL_GetError());
++        return;
++    }
++    a->on = 1;
++    a->right = PAD_TRIG_WEAPON;
++    a->left = PAD_TRIG_FEEDBACK;
++    a->sent_ms = pad_now_ms();
++    fprintf(stderr, "[cellPad] port %d: adaptive triggers on (fire at %d%%)\n", p,
++            pad_adaptive_fire_at() * 100 / 32767 + 1);
++}
++
++/* Free triggers again (closing, exiting). */
++static void pad_adaptive_release(int p, SDL_GameController* gc, int gone)
++{
++    PadAdaptive* a = &s_adapt[p];
++    if (a->on && !gone && gc) pad_trig_send(gc, PAD_TRIG_OFF, PAD_TRIG_OFF);
++    memset(a, 0, sizeof *a);
++}
++
++/* The effects for this poll; returns the right trigger's press point. */
++static int pad_adaptive_update(int p, SDL_GameController* gc, int rt)
++{
++    PadAdaptive* a = &s_adapt[p];
++    if (!a->on) return PAD_TRIGGER_PRESS;
++    const int fire_at = pad_adaptive_fire_at();
++    const PadRumble* r = &s_rumble[p];
++    const unsigned level = r->lo > r->hi ? r->lo : r->hi;
++    int right = PAD_TRIG_WEAPON;
++    if (rt > fire_at && level) {
++        int amp = 1 + (int)(level * 7u / 65535u);
++        right = PAD_TRIG_BUZZ + (amp > 8 ? 8 : amp);
++    }
++    if (right != a->right) {
++        const unsigned long long now = pad_now_ms();
++        if (now - a->sent_ms >= PAD_ADAPT_MIN_GAP_MS && pad_trig_send(gc, right, a->left) == 0) {
++            a->right = right;
++            a->sent_ms = now;
++        }
++    }
++    return fire_at;
++}
++
++/* At exit: no trigger stays stiff after the game. */
++static void pad_adaptive_atexit(void)
++{
++    if (!pad_lock_try()) return;   /* a poll is mid-way: leave it */
++    for (int p = 0; p < PAD_MAX_HOST_PORTS; p++)
++        if (s_sdl_controllers[p]) pad_adaptive_release(p, s_sdl_controllers[p], 0);
++    pad_unlock();
++}
++
++/* ---- DualSense extras: light bar, player light, gyro aim ------------------
++ * A PS3 pad has none of these; on a DualSense (and a DualShock 4 for the
++ * light bar and the gyro):
++ *   - the player lights show the port (1 lit for the first player);
++ *   - the light bar takes PS3_PAD_LIGHT=<RRGGBB> (a port sets its game's
++ *     colour) or goes dark with "off"; unset leaves SDL's own colour. While
++ *     the title runs the motors (hits, explosions, firing) it glows towards
++ *     red with them (PS3_PAD_LIGHT_HIT=0: steady colour);
++ *   - gyro aim, PS3_PAD_GYRO=<percent> (0 off, 100 = full right-stick
++ *     deflection at about 115 degrees a second): turning and tilting the
++ *     controller adds to the right stick, only while the left trigger is
++ *     held (aiming) unless PS3_PAD_GYRO_MODE=always; a port that knows
++ *     when its game aims (a toggled zoom) says so with
++ *     cellPad_host_set_aiming() and that is used instead of the trigger. Turning left looks
++ *     left, tilting the top back looks up (PS3_PAD_GYRO_INVERT_Y=1 flips
++ *     it). A small motion is lifted past the title's stick dead zone
++ *     (PS3_PAD_GYRO_DZ, 0.10 of the travel).
++ * -------------------------------------------------------------------------*/
++typedef struct {
++    int light_set;                /* PS3_PAD_LIGHT parsed: 1 colour, 0 unset, -1 off */
++    uint8_t r, g, b;              /* the colour last sent */
++    unsigned long long led_ms;
++    int gyro;                     /* the gyro is on for this controller */
++} PadExtras;
++static PadExtras s_extra[PAD_MAX_HOST_PORTS];
++
++static int pad_light_cfg(uint8_t rgb[3])
++{
++    static int mode = -2; static uint8_t c[3];
++    if (mode == -2) {
++        const char* e = getenv("PS3_PAD_LIGHT");
++        unsigned v = 0;
++        if (!e || !*e) mode = 0;
++        else if (!strcmp(e, "off")) mode = -1;
++        else if (sscanf(e[0] == '#' ? e + 1 : e, "%6x", &v) == 1) { mode = 1; c[0] = (uint8_t)(v >> 16); c[1] = (uint8_t)(v >> 8); c[2] = (uint8_t)v; }
++        else mode = 0;
++    }
++    memcpy(rgb, c, 3);
++    return mode;
++}
++static int pad_light_hit(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("PS3_PAD_LIGHT_HIT"); on = !(e && e[0] == '0'); }
++    return on;
++}
++static float pad_gyro_sens(void)
++{
++    static float v = -1.0f;
++    if (v < 0.0f) { const char* e = getenv("PS3_PAD_GYRO"); v = e && *e ? (float)atof(e) / 100.0f : 0.0f;
++                    if (!(v >= 0.0f)) v = 0.0f; if (v > 4.0f) v = 4.0f; }
++    return v;
++}
++
++static void pad_extras_open(int p, SDL_GameController* gc)
++{
++    PadExtras* x = &s_extra[p];
++    memset(x, 0, sizeof *x);
++    SDL_GameControllerSetPlayerIndex(gc, p);   /* the DualSense's player lights */
++    uint8_t c[3];
++    x->light_set = pad_light_cfg(c);
++    if (x->light_set && SDL_GameControllerHasLED(gc)) {
++        if (x->light_set < 0) c[0] = c[1] = c[2] = 0;
++        SDL_GameControllerSetLED(gc, c[0], c[1], c[2]);
++        x->r = c[0]; x->g = c[1]; x->b = c[2];
++    }
++    if (pad_gyro_sens() > 0.0f && SDL_GameControllerHasSensor(gc, SDL_SENSOR_GYRO) &&
++        SDL_GameControllerSetSensorEnabled(gc, SDL_SENSOR_GYRO, SDL_TRUE) == 0) {
++        x->gyro = 1;
++        fprintf(stderr, "[cellPad] port %d: gyro aim on (%.0f%%)\n", p, pad_gyro_sens() * 100.0f);
++    }
++}
++
++/* The light bar for this poll: the colour, pulled towards red by the rumble. */
++static void pad_extras_light(int p, SDL_GameController* gc)
++{
++    PadExtras* x = &s_extra[p];
++    uint8_t c[3];
++    const int mode = pad_light_cfg(c);
++    if (!mode || !SDL_GameControllerHasLED(gc)) return;
++    if (mode < 0) c[0] = c[1] = c[2] = 0;
++    if (pad_light_hit()) {
++        const PadRumble* r = &s_rumble[p];
++        const unsigned level = r->lo > r->hi ? r->lo : r->hi;
++        const float t = (float)level / 65535.0f;
++        c[0] = (uint8_t)(c[0] + (255 - c[0]) * t);
++        c[1] = (uint8_t)(c[1] * (1.0f - t));
++        c[2] = (uint8_t)(c[2] * (1.0f - t));
++    }
++    if (c[0] == x->r && c[1] == x->g && c[2] == x->b) return;
++    const unsigned long long now = pad_now_ms();
++    if (now - x->led_ms < 40) return;
++    if (SDL_GameControllerSetLED(gc, c[0], c[1], c[2]) == 0) { x->r = c[0]; x->g = c[1]; x->b = c[2]; x->led_ms = now; }
++}
++
++/* ---- DualSense buttons the PS3 pad has not: mute, touchpad; battery ------
++ * Unless the player bound the button themselves ([controller] misc1 /
++ * touchpad in PS3_INPUT_MAP):
++ *   - the mute button (misc1) turns the game's sound off and on, with the
++ *     button's own orange light showing it (PS3_PAD_MUTE_BUTTON=0: off);
++ *   - a touchpad click opens and closes the in-game menu, as L3+R3 does
++ *     (PS3_PAD_TOUCHPAD_MENU=0: off; nothing where the title has no menu);
++ *   - a battery going low or empty is said once, in the log and as a notice
++ *     on screen where the title has the menu (PS3_PAD_BATTERY=0: off). */
++extern volatile uint32_t g_pad_overlay_toggle;
++/* Stand-ins for what the runtime normally brings (cellAudio.c,
++ * ps3_overlay.mm); a binary without them -- this file's own tests, a title
++ * with no menu -- still links, and the real ones win where they are. */
++static int s_pad_weak_mute;
++__attribute__((weak)) int  cellAudio_host_muted(void) { return s_pad_weak_mute; }
++__attribute__((weak)) void cellAudio_host_set_mute(int on) { s_pad_weak_mute = on ? 1 : 0; }
++static char s_pad_last_notice[128];
++__attribute__((weak)) void ps3_overlay_notice(const char* text)
++{ snprintf(s_pad_last_notice, sizeof s_pad_last_notice, "%s", text ? text : ""); }
++
++static int pad_env_on(const char* name)
++{
++    const char* e = getenv(name);
++    return !(e && (e[0] == '0' || !strcasecmp(e, "off")));
++}
++
++/* The mute button's light: on while the game is muted (DS5 output report:
++ * enable bit 0x01 of the second byte, then the light mode in byte 8). */
++static void pad_mute_light(SDL_GameController* gc, int on)
++{
++    uint8_t st[47];
++    memset(st, 0, sizeof st);
++    st[1] = 0x01;
++    st[8] = on ? 1 : 0;
++    SDL_GameControllerSendEffect(gc, st, (int)sizeof st);
++}
++
++static unsigned long long s_pad_batt_next[PAD_MAX_HOST_PORTS];   /* the next battery look, per port */
++static void pad_extras_buttons(int p, SDL_GameController* gc, uint32_t in, const PadInputMap* map)
++{
++    static uint32_t prev[PAD_MAX_HOST_PORTS];
++    static int mute_on = -1, touch_on = -1, batt_on = -1;
++    if (mute_on < 0) { mute_on = pad_env_on("PS3_PAD_MUTE_BUTTON"); touch_on = pad_env_on("PS3_PAD_TOUCHPAD_MENU");
++                       batt_on = pad_env_on("PS3_PAD_BATTERY"); }
++    const uint32_t down = in & ~prev[p];
++    prev[p] = in;
++    uint32_t bound = 0;
++    for (int c = 0; c < PIM_N_CONTROLS; c++) bound |= map->pad[c];
++    const int ps5 = SDL_GameControllerGetType(gc) == SDL_CONTROLLER_TYPE_PS5;
++
++    if (mute_on && ps5 && (down & (1u << 15)) && !(bound & (1u << 15))) {
++        const int m = !cellAudio_host_muted();
++        cellAudio_host_set_mute(m);
++        pad_mute_light(gc, m);
++        fprintf(stderr, "[cellPad] port %d: mute button: game sound %s\n", p, m ? "off" : "on");
++        ps3_overlay_notice(m ? "Game sound off (mute button)" : "Game sound on");
++    }
++    if (touch_on && (down & (1u << 20)) && !(bound & (1u << 20)))
++        __atomic_add_fetch(&g_pad_overlay_toggle, 1, __ATOMIC_RELEASE);
++
++    /* the battery, every 10 s: said when it drops to low, and to empty */
++    static int last_level[PAD_MAX_HOST_PORTS] = { -9, -9, -9, -9 };
++    const unsigned long long now = pad_now_ms();
++    if (batt_on && now >= s_pad_batt_next[p]) {
++        s_pad_batt_next[p] = now + 10000;
++        const int lv = (int)SDL_JoystickCurrentPowerLevel(SDL_GameControllerGetJoystick(gc));
++        if (lv != last_level[p]) {
++            if ((lv == SDL_JOYSTICK_POWER_LOW || lv == SDL_JOYSTICK_POWER_EMPTY) &&
++                (last_level[p] == -9 || last_level[p] > lv || last_level[p] == SDL_JOYSTICK_POWER_WIRED)) {
++                const char* t = lv == SDL_JOYSTICK_POWER_EMPTY ? "Controller battery almost empty"
++                                                               : "Controller battery low";
++                fprintf(stderr, "[cellPad] port %d: %s\n", p, t);
++                ps3_overlay_notice(t);
+             }
++            last_level[p] = lv;
+         }
++    }
++}
++
++/* A new controller while the game is muted: its mute light on (it starts
++ * off, so nothing is sent otherwise). */
++static void pad_extras_buttons_open(SDL_GameController* gc)
++{
++    if (SDL_GameControllerGetType(gc) == SDL_CONTROLLER_TYPE_PS5 && pad_env_on("PS3_PAD_MUTE_BUTTON") &&
++        cellAudio_host_muted())
++        pad_mute_light(gc, 1);
++}
++
++/* Gyro aim: what the controller's turn this poll adds to the right stick,
++ * in SDL axis units. */
++static void pad_extras_gyro(int p, SDL_GameController* gc, int lt, int* rx, int* ry)
++{
++    PadExtras* x = &s_extra[p];
++    if (!x->gyro) return;
++    static int always = -1, inv_y = -1; static float dz = -1.0f;
++    if (always < 0) { const char* e = getenv("PS3_PAD_GYRO_MODE"); always = e && !strcmp(e, "always"); }
++    if (inv_y < 0) { const char* e = getenv("PS3_PAD_GYRO_INVERT_Y"); inv_y = e && e[0] == '1'; }
++    if (dz < 0.0f) { const char* e = getenv("PS3_PAD_GYRO_DZ"); dz = e ? (float)atof(e) : 0.10f; if (!(dz >= 0.0f) || dz > 0.5f) dz = 0.10f; }
++    const int port_aim = s_port_aiming;
++    if (!always && (port_aim >= 0 ? !port_aim : lt <= PAD_TRIGGER_PRESS)) return;
++    float g[3] = { 0, 0, 0 };   /* rad/s: pitch (x), yaw (y), roll (z) */
++    if (SDL_GameControllerGetSensorData(gc, SDL_SENSOR_GYRO, g, 3) != 0) return;
++    const float full = 2.0f / pad_gyro_sens();   /* rad/s for a full stick */
++    float ax = -g[1] / full, ay = (inv_y ? g[0] : -g[0]) / full;
++    const float noise = 0.015f / full;           /* the resting gyro's jitter */
++    float* v[2] = { &ax, &ay };
++    for (int k = 0; k < 2; k++) {
++        float a = *v[k];
++        if (fabsf(a) < noise) a = 0.0f;
++        else a = (a > 0 ? 1.0f : -1.0f) * (dz + (1.0f - dz) * fminf(1.0f, fabsf(a)));
++        *v[k] = a;
++    }
++    int nx = *rx + (int)(ax * 32767.0f), ny = *ry + (int)(ay * 32767.0f);
++    *rx = nx < -32768 ? -32768 : nx > 32767 ? 32767 : nx;
++    *ry = ny < -32768 ? -32768 : ny > 32767 ? 32767 : ny;
++}
++
 +/* ---- hot-plug ------------------------------------------------------------
 + * A DualSense over Bluetooth drops off when it is switched off or idles, and
 + * comes back as a NEW SDL device (a new instance id, maybe another index).
@@ -4042,7 +4510,7 @@ index 7fa8cab..e046469 100644
 +        if (s_sdl_controllers[p] && s_sdl_ids[p] == id) return p;
 +    return -1;
 +}
-+
+ 
 +/* Close port p's controller (gone, or shutting down). */
 +static void pad_sdl_close(int p, int gone)
 +{
@@ -4050,6 +4518,7 @@ index 7fa8cab..e046469 100644
 +    if (!gc) return;
 +    if (gone) fprintf(stderr, "[cellPad] SDL controller on port %d disconnected (instance %d)\n", p, (int)s_sdl_ids[p]);
 +    else      SDL_GameControllerRumble(gc, 0, 0, 0);
++    pad_adaptive_release(p, gc, gone);
 +    SDL_GameControllerClose(gc);
 +    s_sdl_controllers[p] = NULL;
 +    s_sdl_ids[p] = -1;
@@ -4083,6 +4552,9 @@ index 7fa8cab..e046469 100644
 +        s_sdl_had[port] = 1;
 +        memset(&s_rumble[port], 0, sizeof s_rumble[port]);   /* nothing left over from before */
 +        SDL_GameControllerRumble(gc, 0, 0, 0);
++        pad_adaptive_open(port, gc);
++        pad_extras_open(port, gc);
++        pad_extras_buttons_open(gc);
 +        const char* name = SDL_GameControllerName(gc);
 +        fprintf(stderr, "[cellPad] SDL controller %s on port %d: %s (instance %d)%s\n",
 +                back ? "reconnected" : "connected", port, name ? name : "?", (int)id,
@@ -4117,24 +4589,18 @@ index 7fa8cab..e046469 100644
 +    pad_sdl_scan();
 +}
 +
- static void pad_poll_sdl2(void)
- {
++static void pad_poll_sdl2(void)
++{
 +    if (pad_sdl_off()) {
 +        for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) s_host_state[i].connected = 0;
 +        return;
 +    }
-     SDL_GameControllerUpdate();
++    SDL_GameControllerUpdate();
 +    pad_sdl_hotplug(0);
- 
++
 +    const PadInputMap* map = pad_map();
-     for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
--        if (!s_sdl_controllers[i]) {
--            /* Try to open newly connected controllers */
--            if (SDL_IsGameController(i)) {
--                s_sdl_controllers[i] = SDL_GameControllerOpen(i);
--            }
--        }
--
++    uint32_t raw_all = 0;
++    for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
          SDL_GameController* gc = s_sdl_controllers[i];
 -        if (!gc || !SDL_GameControllerGetAttached(gc)) {
 +        if (!gc) {
@@ -4184,8 +4650,11 @@ index 7fa8cab..e046469 100644
 +        uint32_t in = 0;
 +        for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX && b < PIM_PAD_TRIGGER_LEFT; b++)
 +            if (SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)b)) in |= 1u << b;
-+        if (lt > 3000) in |= 1u << PIM_PAD_TRIGGER_LEFT;
-+        if (rt > 3000) in |= 1u << PIM_PAD_TRIGGER_RIGHT;
++        const int fire_at = pad_adaptive_update(i, gc, rt);
++        if (lt > PAD_TRIGGER_PRESS) in |= 1u << PIM_PAD_TRIGGER_LEFT;
++        if (rt > fire_at) in |= 1u << PIM_PAD_TRIGGER_RIGHT;
++        raw_all |= in;
++        pad_extras_buttons(i, gc, in, map);
 +        uint32_t ctl = 0;
 +        for (int c = 0; c < PIM_N_CONTROLS; c++)
 +            if (map->pad[c] & in) ctl |= 1u << c;
@@ -4223,10 +4692,12 @@ index 7fa8cab..e046469 100644
 +                                        pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX)));
 +        s_host_state[i].analog_ly = (u8)pad_dir_axis(ctl, PIM_LS_UP, PIM_LS_DOWN,
 +                                        pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY)));
-+        s_host_state[i].analog_rx = (u8)pad_dir_axis(ctl, PIM_RS_LEFT, PIM_RS_RIGHT,
-+                                        pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTX)));
-+        s_host_state[i].analog_ry = (u8)pad_dir_axis(ctl, PIM_RS_UP, PIM_RS_DOWN,
-+                                        pad_sdl_axis_to_u8(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTY)));
++        int rx = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTX);
++        int ry = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTY);
++        pad_extras_gyro(i, gc, lt, &rx, &ry);
++        pad_extras_light(i, gc);
++        s_host_state[i].analog_rx = (u8)pad_dir_axis(ctl, PIM_RS_LEFT, PIM_RS_RIGHT, pad_sdl_axis_to_u8(rx));
++        s_host_state[i].analog_ry = (u8)pad_dir_axis(ctl, PIM_RS_UP, PIM_RS_DOWN, pad_sdl_axis_to_u8(ry));
 +
 +        /* Analog L2/R2 from whatever is bound to them. */
 +        s_host_state[i].trigger_l2 = pad_sdl_analog(map->pad[PIM_L2], in, pad_sdl_trigger_to_u8(lt), pad_sdl_trigger_to_u8(rt));
@@ -4234,7 +4705,12 @@ index 7fa8cab..e046469 100644
  
          /* Pressure: SDL has digital buttons, so 0 or 255 */
          s_host_state[i].press_up       = (btns & CELL_PAD_CTRL_UP)       ? 255 : 0;
-@@ -423,32 +750,51 @@ static void pad_poll_sdl2(void)
+@@ -419,36 +1193,57 @@ static void pad_poll_sdl2(void)
+         s_host_state[i].press_l1       = (btns & CELL_PAD_CTRL_L1)       ? 255 : 0;
+         s_host_state[i].press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
+     }
++    g_pad_overlay_raw = raw_all;
+ }
  
  static void pad_init_backend(void)
  {
@@ -4267,6 +4743,7 @@ index 7fa8cab..e046469 100644
              SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
          }
          s_sdl_inited = 1;
++        atexit(pad_adaptive_atexit);
      }
      memset(s_sdl_controllers, 0, sizeof(s_sdl_controllers));
 +    for (int p = 0; p < PAD_MAX_HOST_PORTS; p++) s_sdl_ids[p] = -1;
@@ -4299,7 +4776,7 @@ index 7fa8cab..e046469 100644
      memset(s_rumble, 0, sizeof s_rumble);
  }
  
-@@ -485,6 +831,240 @@ static unsigned long long pad_now_ms(void)
+@@ -485,6 +1280,240 @@ static unsigned long long pad_now_ms(void)
  #endif
  }
  
@@ -4540,7 +5017,7 @@ index 7fa8cab..e046469 100644
  static void pad_poll_backend(void)
  {
      /* Benign race: two threads may poll in the same tick. That costs one extra
-@@ -492,6 +1072,7 @@ static void pad_poll_backend(void)
+@@ -492,6 +1521,7 @@ static void pad_poll_backend(void)
      static unsigned long long s_last_ms = 0;
      unsigned long long now = pad_now_ms();
      if (s_last_ms && now - s_last_ms < PAD_POLL_INTERVAL_MS) return;
@@ -4548,7 +5025,7 @@ index 7fa8cab..e046469 100644
      s_last_ms = now;
      /* A real pad streams reports at roughly this rate whether or not anything
       * changed, and libpad buffers them; a fresh sweep is a fresh report for
-@@ -505,7 +1086,20 @@ static void pad_poll_backend(void)
+@@ -505,7 +1535,20 @@ static void pad_poll_backend(void)
  #endif
  #ifdef _WIN32
      if (!s_host_state[0].connected) pad_poll_keyboard();
@@ -4569,7 +5046,7 @@ index 7fa8cab..e046469 100644
  }
  
  /* ---------------------------------------------------------------------------
-@@ -526,15 +1120,24 @@ s32 cellPadInit(u32 max_connect)
+@@ -526,15 +1569,24 @@ s32 cellPadInit(u32 max_connect)
      if (max_connect == 0 || max_connect > 127)
          return CELL_PAD_ERROR_INVALID_PARAMETER;
  
@@ -4594,7 +5071,7 @@ index 7fa8cab..e046469 100644
  
      return CELL_OK;
  }
-@@ -546,7 +1149,9 @@ s32 cellPadEnd(void)
+@@ -546,7 +1598,9 @@ s32 cellPadEnd(void)
      if (!s_pad_initialized)
          return CELL_PAD_ERROR_NOT_OPENED;
  
@@ -4604,7 +5081,7 @@ index 7fa8cab..e046469 100644
  
      s_pad_initialized = 0;
      s_max_connect = 0;
-@@ -716,9 +1321,29 @@ skip_inject: ;
+@@ -716,9 +1770,29 @@ skip_inject: ;
                    held[i]--;
                    data->button[CELL_PAD_BTN_OFFSET_DIGITAL1] |= (u16)(ev[i].mask & 0xFF);
                    data->button[CELL_PAD_BTN_OFFSET_DIGITAL2] |= (u16)((ev[i].mask >> 8) & 0xFF);
@@ -4636,7 +5113,7 @@ index 7fa8cab..e046469 100644
                }
            }
        } }
-@@ -735,6 +1360,7 @@ skip_inject: ;
+@@ -735,6 +1809,7 @@ skip_inject: ;
       *   echo 0x0040 4 > pad.txt  # DOWN for 4 polls (menus auto-repeat a
       *                            # long hold; the default is 40)
       */
@@ -4644,7 +5121,7 @@ index 7fa8cab..e046469 100644
      { static int s_pf = -1; static char pf_path[512];
        static unsigned held_mask = 0; static int held_n = 0;
        if (s_pf < 0) { const char* e = getenv("PAD_FILE");
-@@ -746,11 +1372,25 @@ skip_inject: ;
+@@ -746,11 +1821,25 @@ skip_inject: ;
                if (f) {
                    char buf[64]; buf[0] = 0;
                    if (fgets(buf, sizeof buf, f)) {
@@ -4675,7 +5152,7 @@ index 7fa8cab..e046469 100644
                    }
                    fclose(f);
                    if (held_n > 0) { FILE* w = fopen(pf_path, "wb"); if (w) fclose(w); }
-@@ -782,6 +1422,12 @@ skip_inject: ;
+@@ -782,6 +1871,12 @@ skip_inject: ;
        if (s_st && pad_clock(s_t0) >= s_from && pad_clock(s_t0) < s_until) { hs->analog_lx = s_v[0]; hs->analog_ly = s_v[1];
                    hs->analog_rx = s_v[2]; hs->analog_ry = s_v[3];
                    hs->connected = 1; }
@@ -4688,7 +5165,7 @@ index 7fa8cab..e046469 100644
        /* PAD_SWEEP=<seconds per step>: walk the sticks through a fixed set of
         * deflections instead of holding one. Guessing a single stick position and
         * re-running costs ~5 minutes a try; a sweep answers "can input move the
-@@ -896,6 +1542,21 @@ emit:
+@@ -896,6 +1991,21 @@ emit:
      }
      {
          unsigned int ea = (unsigned int)(uintptr_t)data_guest;
@@ -4710,7 +5187,7 @@ index 7fa8cab..e046469 100644
          vm_write32((unsigned long long)ea + 0, (unsigned int)data->len);   /* len (s32) */
          for (int _i = 0; _i < CELL_PAD_MAX_CODES; _i++)                    /* button[] u16 */
              vm_write16((unsigned long long)ea + 4 + (unsigned int)_i * 2, data->button[_i]);
-@@ -946,7 +1607,7 @@ s32 cellPadGetInfo(CellPadInfo2* info)
+@@ -946,7 +2056,7 @@ s32 cellPadGetInfo(CellPadInfo2* info)
                    (s_host_state[i].connected || i == 0));
          vm_write16(gaddr + 0x00C + i * 2, on ? 0x054C : 0);   /* vendor: Sony  */
          vm_write16(gaddr + 0x10A + i * 2, on ? 0x0268 : 0);   /* product: DS3  */
@@ -4719,7 +5196,7 @@ index 7fa8cab..e046469 100644
      }
      return CELL_OK;
  }
-@@ -973,7 +1634,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
+@@ -973,7 +2083,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
           * boot flows that block until a controller is connected can proceed even
           * with no physical device attached. */
          if (s_host_state[i].connected || i == 0) {
@@ -4728,7 +5205,7 @@ index 7fa8cab..e046469 100644
              info->port_setting[i]      = s_port_setting[i];
              info->device_capability[i] = CELL_PAD_CAPABILITY_PS3_CONFORMITY
                                         | CELL_PAD_CAPABILITY_PRESS_MODE
-@@ -983,7 +1644,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
+@@ -983,7 +2093,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
              info->device_type[i]       = CELL_PAD_DEV_TYPE_STANDARD;
              connected++;
          } else {
@@ -4737,7 +5214,7 @@ index 7fa8cab..e046469 100644
          }
      }
      info->now_connect = connected;
-@@ -1028,7 +1689,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
+@@ -1028,7 +2138,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
          /* Same virtual-pad-on-port-0 rule as cellPadGetInfo2, so both views of
           * the ports agree (a game that cross-checks them must see one truth). */
          if ((i < PAD_MAX_HOST_PORTS && s_host_state[i].connected) || i == 0) {
@@ -4746,7 +5223,7 @@ index 7fa8cab..e046469 100644
              info->port_setting[i]      = s_port_setting[i];
              info->device_capability[i] = CELL_PAD_CAPABILITY_PS3_CONFORMITY
                                         | CELL_PAD_CAPABILITY_PRESS_MODE
-@@ -1040,7 +1701,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
+@@ -1040,7 +2150,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
              info->pclass_profile[i]    = 0;
              connected++;
          } else {
@@ -4755,7 +5232,7 @@ index 7fa8cab..e046469 100644
          }
      }
      info->now_connect = connected;
-@@ -1104,6 +1765,39 @@ s32 cellPadSetPressMode(u32 port_no, u32 mode)
+@@ -1104,6 +2214,39 @@ s32 cellPadSetPressMode(u32 port_no, u32 mode)
      return CELL_OK;
  }
  
@@ -4795,7 +5272,7 @@ index 7fa8cab..e046469 100644
  s32 cellPadGetCapabilityInfo(u32 port_no, CellPadCapabilityInfo* info)
  {
      if (!s_pad_initialized)
-@@ -1136,29 +1830,43 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+@@ -1136,29 +2279,43 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
  
      param = GUEST_PTR(param, CellPadActParam*);
  
@@ -4848,7 +5325,7 @@ index 7fa8cab..e046469 100644
  }
  
 diff --git a/libs/input/cellPad.h b/libs/input/cellPad.h
-index 89c58ab..b35fcb6 100644
+index 89c58ab..6619633 100644
 --- a/libs/input/cellPad.h
 +++ b/libs/input/cellPad.h
 @@ -187,6 +187,8 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info);
@@ -4860,6 +5337,18 @@ index 89c58ab..b35fcb6 100644
  
  /* NID: 0x578E3C98 */
  s32 cellPadGetCapabilityInfo(u32 port_no, CellPadCapabilityInfo* info);
+@@ -200,6 +202,11 @@ s32 cellPadClearBuf(u32 port_no);
+ /* Internal: call once per frame to update pad state from host input */
+ void cellPad_poll(void);
+ 
++/* Gyro aim (PS3_PAD_GYRO, "aim" mode): a port whose game aims with a toggle
++ * (a zoom on/off) reports it here; from the first call the gyro follows it
++ * instead of the controller's left trigger being held. */
++void cellPad_host_set_aiming(int aiming);
++
+ #ifdef __cplusplus
+ }
+ #endif
 diff --git a/libs/input/host_input_cocoa.h b/libs/input/host_input_cocoa.h
 new file mode 100644
 index 0000000..6236d00
@@ -5954,12 +6443,272 @@ index 0000000..155c6af
 +}
 +/* Read the mouse settings from the environment again. */
 +void test_pad_reload_mouse(void) { s_mouse_on = -1; }
+diff --git a/libs/input/tests/test_pad_adaptive.c b/libs/input/tests/test_pad_adaptive.c
+new file mode 100644
+index 0000000..0b37b22
+--- /dev/null
++++ b/libs/input/tests/test_pad_adaptive.c
+@@ -0,0 +1,254 @@
++/* cellPad's DualSense adaptive triggers: a DualSense gets a gun click on the
++ * right trigger (pressed only past the break) and a light resistance on the
++ * left; firing with the motors running makes the right trigger buzz, and it
++ * clicks again afterwards; closing the controller frees both triggers. A
++ * controller that refuses effects, and PS3_PAD_ADAPTIVE=0, keep free
++ * triggers pressed past 3000 as before.
++ *
++ *   cc -std=gnu17 -I include -isystem /opt/homebrew/include \
++ *      -isystem /opt/homebrew/include/SDL2 libs/input/tests/test_pad_adaptive.c \
++ *      -o /tmp/test_pad_adaptive && /tmp/test_pad_adaptive
++ *
++ * Nothing links SDL: the test defines every SDL call the backend makes.
++ */
++#include "../cellPad.c"
++#include <assert.h>
++#include <sys/mman.h>
++uint8_t* vm_base;
++uint32_t ppu_vm_size;
++int g_resv_store_active;
++uint32_t g_ww_lo, g_ww_hi;
++void ppu_resv_break_store(uint64_t ea) { (void)ea; }
++void ps3_ww_report_inline(uint32_t a, uint64_t v, int w) { (void)a; (void)v; (void)w; }
++int spu_coh_is_reserved(uint32_t a) { (void)a; return 0; }
++void spu_coh_notify_write(uint32_t a) { (void)a; }
++void spu_lockline_lock(void) {}
++void spu_lockline_unlock(void) {}
++u32 cellGcm_flip_request_count(void) { return 0; }
++
++/* ---- the fake SDL: one controller ------------------------------------------ */
++static struct {
++    int present, closed, ps5, refuse;
++    Sint16 lt, rt;
++    int effects;                 /* SendEffect calls */
++    uint8_t last[47];            /* the last effect report */
++} s_pad = { .present = 1, .ps5 = 1 };
++
++int SDL_NumJoysticks(void) { return s_pad.present; }
++SDL_bool SDL_IsGameController(int idx) { return idx == 0 && s_pad.present ? SDL_TRUE : SDL_FALSE; }
++SDL_JoystickID SDL_JoystickGetDeviceInstanceID(int idx) { return idx == 0 ? 1 : -1; }
++SDL_JoystickGUID SDL_JoystickGetDeviceGUID(int idx) { SDL_JoystickGUID g; memset(&g, 0, sizeof g); g.data[0] = (Uint8)idx; return g; }
++const char* SDL_JoystickNameForIndex(int idx) { (void)idx; return "Fake DualSense"; }
++SDL_GameController* SDL_GameControllerOpen(int idx) { (void)idx; s_pad.closed = 0; return (SDL_GameController*)&s_pad; }
++void SDL_GameControllerClose(SDL_GameController* gc) { (void)gc; s_pad.closed = 1; }
++SDL_bool SDL_GameControllerGetAttached(SDL_GameController* gc) { (void)gc; return s_pad.present ? SDL_TRUE : SDL_FALSE; }
++const char* SDL_GameControllerName(SDL_GameController* gc) { (void)gc; return "Fake DualSense"; }
++SDL_GameControllerType SDL_GameControllerGetType(SDL_GameController* gc)
++{
++    (void)gc; return s_pad.ps5 ? SDL_CONTROLLER_TYPE_PS5 : SDL_CONTROLLER_TYPE_XBOXONE;
++}
++SDL_bool SDL_GameControllerHasRumble(SDL_GameController* gc) { (void)gc; return SDL_TRUE; }
++int SDL_GameControllerRumble(SDL_GameController* gc, Uint16 lo, Uint16 hi, Uint32 ms) { (void)gc; (void)lo; (void)hi; (void)ms; return 0; }
++int SDL_GameControllerSendEffect(SDL_GameController* gc, const void* data, int size)
++{
++    (void)gc;
++    assert(!s_pad.closed && size == 47);
++    if (s_pad.refuse) return -1;
++    memcpy(s_pad.last, data, 47);
++    s_pad.effects++;
++    return 0;
++}
++static uint32_t s_buttons;   /* SDL buttons held, by bit */
++Uint8 SDL_GameControllerGetButton(SDL_GameController* gc, SDL_GameControllerButton b) { (void)gc; return (s_buttons >> b) & 1u; }
++static SDL_JoystickPowerLevel s_power = SDL_JOYSTICK_POWER_FULL;
++SDL_Joystick* SDL_GameControllerGetJoystick(SDL_GameController* gc) { return (SDL_Joystick*)gc; }
++SDL_JoystickPowerLevel SDL_JoystickCurrentPowerLevel(SDL_Joystick* j) { (void)j; return s_power; }
++Sint16 SDL_GameControllerGetAxis(SDL_GameController* gc, SDL_GameControllerAxis a)
++{
++    (void)gc;
++    return a == SDL_CONTROLLER_AXIS_TRIGGERLEFT ? s_pad.lt : a == SDL_CONTROLLER_AXIS_TRIGGERRIGHT ? s_pad.rt : 0;
++}
++void SDL_GameControllerUpdate(void) {}
++int SDL_PeepEvents(SDL_Event* ev, int n, SDL_eventaction action, Uint32 lo, Uint32 hi) { (void)ev; (void)n; (void)action; (void)lo; (void)hi; return 0; }
++Uint32 SDL_WasInit(Uint32 flags) { return flags; }
++int SDL_InitSubSystem(Uint32 flags) { (void)flags; return 0; }
++SDL_bool SDL_SetHint(const char* name, const char* value) { (void)name; (void)value; return SDL_TRUE; }
++const char* SDL_GetError(void) { return "fake"; }
++/* The DualSense extras: the light bar's colour and the gyro, recorded. */
++static struct { int player; int leds; Uint8 rgb[3]; int gyro_on; float gyro[3]; } s_x;
++void SDL_GameControllerSetPlayerIndex(SDL_GameController* gc, int i) { (void)gc; s_x.player = i + 1; }
++SDL_bool SDL_GameControllerHasLED(SDL_GameController* gc) { (void)gc; return s_pad.ps5 ? SDL_TRUE : SDL_FALSE; }
++int SDL_GameControllerSetLED(SDL_GameController* gc, Uint8 r, Uint8 g, Uint8 b)
++{ (void)gc; s_x.rgb[0] = r; s_x.rgb[1] = g; s_x.rgb[2] = b; s_x.leds++; return 0; }
++SDL_bool SDL_GameControllerHasSensor(SDL_GameController* gc, SDL_SensorType t) { (void)gc; return t == SDL_SENSOR_GYRO ? SDL_TRUE : SDL_FALSE; }
++int SDL_GameControllerSetSensorEnabled(SDL_GameController* gc, SDL_SensorType t, SDL_bool on) { (void)gc; (void)t; s_x.gyro_on = on; return 0; }
++int SDL_GameControllerGetSensorData(SDL_GameController* gc, SDL_SensorType t, float* d, int n)
++{ (void)gc; (void)t; for (int i = 0; i < n && i < 3; i++) d[i] = s_x.gyro[i]; return 0; }
++
++/* ---- helpers ---------------------------------------------------------------- */
++static void poll_wait(int ms)
++{
++    usleep((unsigned)ms * 1000);
++    cellPad_poll();
++}
++/* R2 as the title reads it: bit 0x02 of DIGITAL2. */
++static int r2_down(void)
++{
++    const uint32_t ea = 0x2000;
++    usleep((PAD_POLL_INTERVAL_MS + 2) * 1000);
++    assert(cellPadGetData(0, (CellPadData*)(uintptr_t)ea) == CELL_OK);
++    const uint8_t* b = vm_base + ea + 4 + CELL_PAD_BTN_OFFSET_DIGITAL2 * 2;
++    return ((unsigned)b[0] << 8 | b[1]) & 0x02u ? 1 : 0;
++}
++static int right_mode(void) { return s_pad.last[10]; }
++static int left_mode(void)  { return s_pad.last[21]; }
++static void rumble(int large)
++{
++    CellPadActParam* act = (CellPadActParam*)(vm_base + 0x3000);
++    act->motor[CELL_PAD_ACTUATOR_PARAM_SMALL] = 0;
++    act->motor[CELL_PAD_ACTUATOR_PARAM_LARGE] = (u8)large;
++    assert(cellPadSetActDirect(0, (CellPadActParam*)(uintptr_t)0x3000) == CELL_OK);
++}
++
++int main(void)
++{
++    unsetenv("PS3_PAD_SDL"); unsetenv("PS3_INPUT_MAP"); unsetenv("PS3_INPUT_MODE");
++    unsetenv("PS3_RUMBLE"); unsetenv("PS3_RUMBLE_STRENGTH");
++    unsetenv("PS3_PAD_ADAPTIVE"); unsetenv("PS3_PAD_FIRE_AT");
++    setenv("PS3_PAD_LIGHT", "102030", 1); unsetenv("PS3_PAD_LIGHT_HIT");
++    setenv("PS3_PAD_GYRO", "100", 1); unsetenv("PS3_PAD_GYRO_MODE"); unsetenv("PS3_PAD_GYRO_INVERT_Y"); unsetenv("PS3_PAD_GYRO_DZ");
++    vm_base = mmap(NULL, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
++    assert(vm_base != MAP_FAILED);
++
++    /* A DualSense: the gun click on the right, light resistance on the left. */
++    assert(cellPadInit(4) == CELL_OK);
++    assert(s_adapt[0].on && s_pad.effects == 1);
++    assert(s_pad.last[0] == (0x04 | 0x08));
++    assert(s_pad.last[1] == 0x02 && s_pad.last[9] == 0);    /* the first one clears the power-save bits */
++    /* Player 1's light, the port's light-bar colour, the gyro on. */
++    assert(s_x.player == 1 && s_x.leds == 1 && s_x.rgb[0] == 0x10 && s_x.rgb[1] == 0x20 && s_x.rgb[2] == 0x30);
++    assert(s_x.gyro_on);
++    assert(right_mode() == 0x25 && left_mode() == 0x21);
++    assert(s_pad.last[11] == ((1 << 2) | (1 << 5)) && s_pad.last[12] == 0 && s_pad.last[13] == 5);
++
++    /* Pressed only past the break (half way), not at the first touch. */
++    s_pad.rt = 6000;
++    assert(!r2_down());
++    s_pad.rt = 20000;
++    assert(r2_down());
++
++    /* Firing with the motors running: the right trigger buzzes ... */
++    rumble(255);
++    poll_wait(PAD_ADAPT_MIN_GAP_MS + 5);
++    assert(right_mode() == 0x26 && left_mode() == 0x21);
++    assert(s_pad.last[13] == 0xFF && s_pad.last[16] == 0x3F && s_pad.last[19] == 30);   /* amplitude 8 in all ten zones, 30 Hz */
++    const int after_buzz = s_pad.effects;
++    poll_wait(PAD_ADAPT_MIN_GAP_MS + 5);
++    assert(s_pad.effects == after_buzz);                     /* unchanged: nothing re-sent */
++    /* ... and clicks again when the shooting stops. */
++    rumble(0);
++    poll_wait(PAD_ADAPT_MIN_GAP_MS + 5);
++    assert(right_mode() == 0x25);
++    /* Motors running but the trigger let go (a hit, an explosion): a click. */
++    rumble(255);
++    s_pad.rt = 0;
++    poll_wait(PAD_ADAPT_MIN_GAP_MS + 5);
++    assert(right_mode() == 0x25);
++    rumble(0);
++
++    assert(s_pad.last[1] == 0);                               /* later ones leave them */
++
++    /* The motors pull the light bar towards red. */
++    rumble(255);
++    poll_wait(60);
++    assert(s_x.rgb[0] > 0x80 && s_x.rgb[1] < 0x20 && s_x.rgb[2] < 0x30);
++    rumble(0);
++    poll_wait(60);
++    assert(s_x.rgb[0] == 0x10 && s_x.rgb[1] == 0x20 && s_x.rgb[2] == 0x30);
++
++    /* Gyro aim: nothing while the left trigger is up; turning left with it
++     * held pushes the right stick left (past the dead zone), tilting the top
++     * back pushes it up. */
++    s_x.gyro[1] = 1.0f;
++    poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(s_host_state[0].analog_rx == 127 || s_host_state[0].analog_rx == 128);
++    s_pad.lt = 20000;
++    poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(s_host_state[0].analog_rx < 128 - 40);
++    s_x.gyro[1] = 0.0f; s_x.gyro[0] = 1.0f;
++    poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(s_host_state[0].analog_ry < 128 - 40 && (s_host_state[0].analog_rx == 127 || s_host_state[0].analog_rx == 128));
++    s_x.gyro[0] = 0.001f;                                     /* resting jitter: nothing */
++    poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(s_host_state[0].analog_ry == 127 || s_host_state[0].analog_ry == 128);
++    s_pad.lt = 0; s_x.gyro[0] = 0.0f;
++
++    /* A port that reports its game's aim (a toggled zoom): the gyro follows
++     * that, not the left trigger. */
++    s_x.gyro[1] = 1.0f;
++    cellPad_host_set_aiming(1);
++    poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(s_host_state[0].analog_rx < 128 - 40);            /* aiming, trigger up */
++    cellPad_host_set_aiming(0); s_pad.lt = 20000;
++    poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(s_host_state[0].analog_rx == 127 || s_host_state[0].analog_rx == 128);   /* trigger held, not aiming */
++    s_pad.lt = 0; s_x.gyro[1] = 0.0f;
++
++    /* The mute button (misc1): the game's sound off with the button's light
++     * on, a notice; again: back on, light off. Held, it does nothing more. */
++    assert(!cellAudio_host_muted());
++    s_buttons = 1u << SDL_CONTROLLER_BUTTON_MISC1;
++    poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(cellAudio_host_muted() == 1);
++    assert(s_pad.last[1] == 0x01 && s_pad.last[8] == 1);
++    assert(strstr(s_pad_last_notice, "off"));
++    poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(cellAudio_host_muted() == 1);
++    s_buttons = 0; poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    s_buttons = 1u << SDL_CONTROLLER_BUTTON_MISC1; poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(cellAudio_host_muted() == 0 && s_pad.last[1] == 0x01 && s_pad.last[8] == 0);
++    s_buttons = 0; poll_wait(PAD_POLL_INTERVAL_MS + 2);
++
++    /* A touchpad click opens the in-game menu, once per click. */
++    const uint32_t t0 = g_pad_overlay_toggle;
++    s_buttons = 1u << SDL_CONTROLLER_BUTTON_TOUCHPAD;
++    poll_wait(PAD_POLL_INTERVAL_MS + 2); poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(g_pad_overlay_toggle == t0 + 1);
++    s_buttons = 0; poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(g_pad_overlay_toggle == t0 + 1);
++
++    /* The battery going low is said once, not again while it stays low. */
++    s_pad_last_notice[0] = 0;
++    s_power = SDL_JOYSTICK_POWER_LOW; s_pad_batt_next[0] = 0;
++    poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(strstr(s_pad_last_notice, "battery low"));
++    s_pad_last_notice[0] = 0; s_pad_batt_next[0] = 0;
++    poll_wait(PAD_POLL_INTERVAL_MS + 2);
++    assert(s_pad_last_notice[0] == 0);
++    s_power = SDL_JOYSTICK_POWER_FULL;
++
++    /* Closing frees both triggers. */
++    const int before_end = s_pad.effects;
++    assert(cellPadEnd() == CELL_OK);
++    assert(s_pad.closed && s_pad.effects == before_end + 1);
++    assert(right_mode() == 0x05 && left_mode() == 0x05);
++
++    /* Not a DualSense: no effects, the usual press point. */
++    s_pad.ps5 = 0;
++    const int before_xbox = s_pad.effects;
++    assert(cellPadInit(4) == CELL_OK);
++    assert(!s_adapt[0].on && s_pad.effects == before_xbox);
++    s_pad.rt = 6000;
++    assert(r2_down());
++    assert(cellPadEnd() == CELL_OK && s_pad.effects == before_xbox);
++
++    /* A DualSense that refuses the effect: the same. */
++    s_pad.ps5 = 1; s_pad.refuse = 1;
++    assert(cellPadInit(4) == CELL_OK);
++    assert(!s_adapt[0].on);
++    assert(r2_down());
++    assert(cellPadEnd() == CELL_OK);
++
++    printf("test_pad_adaptive: all passed\n");
++    return 0;
++}
 diff --git a/libs/input/tests/test_pad_hotplug.c b/libs/input/tests/test_pad_hotplug.c
 new file mode 100644
-index 0000000..48d0b09
+index 0000000..99fbc8b
 --- /dev/null
 +++ b/libs/input/tests/test_pad_hotplug.c
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,283 @@
 +/* cellPad's SDL controller hot-plug: a controller switched off and on again
 + * (a DualSense over Bluetooth comes back with a new instance id) is opened
 + * again without a restart, into the port it had; a new one goes into a free
@@ -5976,6 +6725,16 @@ index 0000000..48d0b09
 + * so code that never calls it keeps seeing the switched-off controller.
 + */
 +#include "../cellPad.c"
++
++/* The DualSense extras (light bar, player lights, gyro): not exercised here. */
++void SDL_GameControllerSetPlayerIndex(SDL_GameController* gc, int i) { (void)gc; (void)i; }
++SDL_bool SDL_GameControllerHasLED(SDL_GameController* gc) { (void)gc; return SDL_FALSE; }
++int SDL_GameControllerSetLED(SDL_GameController* gc, Uint8 r, Uint8 g, Uint8 b) { (void)gc; (void)r; (void)g; (void)b; return 0; }
++SDL_bool SDL_GameControllerHasSensor(SDL_GameController* gc, SDL_SensorType t) { (void)gc; (void)t; return SDL_FALSE; }
++int SDL_GameControllerSetSensorEnabled(SDL_GameController* gc, SDL_SensorType t, SDL_bool on) { (void)gc; (void)t; (void)on; return -1; }
++int SDL_GameControllerGetSensorData(SDL_GameController* gc, SDL_SensorType t, float* d, int n) { (void)gc; (void)t; (void)d; (void)n; return -1; }
++SDL_Joystick* SDL_GameControllerGetJoystick(SDL_GameController* gc) { return (SDL_Joystick*)gc; }
++SDL_JoystickPowerLevel SDL_JoystickCurrentPowerLevel(SDL_Joystick* j) { (void)j; return SDL_JOYSTICK_POWER_WIRED; }
 +#include <assert.h>
 +#include <sys/mman.h>
 +uint8_t* vm_base;
@@ -6057,6 +6816,7 @@ index 0000000..48d0b09
 +    p->rumble_lo = lo; p->rumble_hi = hi; p->rumble_calls++;
 +    return 0;
 +}
++int SDL_GameControllerSendEffect(SDL_GameController* gc, const void* data, int size) { (void)gc; (void)data; (void)size; return 0; }
 +Uint8 SDL_GameControllerGetButton(SDL_GameController* gc, SDL_GameControllerButton b)
 +{
 +    return (Uint8)((((FakePad*)gc)->buttons >> b) & 1u);
@@ -6900,7 +7660,7 @@ index 0000000..2754b62
 +    return 0;
 +}
 diff --git a/libs/input/tests/test_pad_rumble.c b/libs/input/tests/test_pad_rumble.c
-index b5dec8a..9cbde31 100644
+index b5dec8a..0673801 100644
 --- a/libs/input/tests/test_pad_rumble.c
 +++ b/libs/input/tests/test_pad_rumble.c
 @@ -1,5 +1,6 @@
@@ -6912,7 +7672,22 @@ index b5dec8a..9cbde31 100644
   *
   *   clang -std=gnu17 -I include $(sdl2-config --cflags) -I "$(sdl2-config --prefix)/include" \
   *         libs/input/tests/test_pad_rumble.c $(sdl2-config --libs) -o /tmp/test_pad_rumble && /tmp/test_pad_rumble
-@@ -35,20 +36,50 @@ int SDL_GameControllerRumble(SDL_GameController* gc, Uint16 lo, Uint16 hi, Uint3
+@@ -9,6 +10,14 @@
+  * controller, and records what reaches SDL_GameControllerRumble.
+  */
+ #include "../cellPad.c"
++
++/* The DualSense extras (light bar, player lights, gyro): not exercised here. */
++void SDL_GameControllerSetPlayerIndex(SDL_GameController* gc, int i) { (void)gc; (void)i; }
++SDL_bool SDL_GameControllerHasLED(SDL_GameController* gc) { (void)gc; return SDL_FALSE; }
++int SDL_GameControllerSetLED(SDL_GameController* gc, Uint8 r, Uint8 g, Uint8 b) { (void)gc; (void)r; (void)g; (void)b; return 0; }
++SDL_bool SDL_GameControllerHasSensor(SDL_GameController* gc, SDL_SensorType t) { (void)gc; (void)t; return SDL_FALSE; }
++int SDL_GameControllerSetSensorEnabled(SDL_GameController* gc, SDL_SensorType t, SDL_bool on) { (void)gc; (void)t; (void)on; return -1; }
++int SDL_GameControllerGetSensorData(SDL_GameController* gc, SDL_SensorType t, float* d, int n) { (void)gc; (void)t; (void)d; (void)n; return -1; }
+ #include <assert.h>
+ #include <sys/mman.h>
+ uint8_t* vm_base;
+@@ -35,20 +44,50 @@ int SDL_GameControllerRumble(SDL_GameController* gc, Uint16 lo, Uint16 hi, Uint3
      return 0;
  }
  void SDL_GameControllerUpdate(void) {}
@@ -6968,7 +7743,7 @@ index b5dec8a..9cbde31 100644
  }
  
  static void set_act(u32 port, u8 small, u8 large, s32 want)
-@@ -64,6 +95,7 @@ static void test_set_act_direct(void)
+@@ -64,6 +103,7 @@ static void test_set_act_direct(void)
      vm_base = mmap(NULL, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
      assert(vm_base != MAP_FAILED);
      s_pad_initialized = 1;
@@ -6976,7 +7751,7 @@ index b5dec8a..9cbde31 100644
  
      /* No controller on port 0: the state is kept, nothing is sent. */
      set_act(0, 1, 200, CELL_OK);
-@@ -78,6 +110,11 @@ static void test_set_act_direct(void)
+@@ -78,6 +118,11 @@ static void test_set_act_direct(void)
      assert(s_ms == PAD_RUMBLE_HOLD_MS && PAD_RUMBLE_RENEW_MS < PAD_RUMBLE_HOLD_MS);
      assert(s_rumble[0].sent_ms != 0);
  
@@ -6988,7 +7763,7 @@ index b5dec8a..9cbde31 100644
      /* The poll renews it once PAD_RUMBLE_RENEW_MS has passed, not before. */
      pad_poll_sdl2();
      assert(s_calls == 1);
-@@ -93,9 +130,27 @@ static void test_set_act_direct(void)
+@@ -93,9 +138,27 @@ static void test_set_act_direct(void)
      pad_poll_sdl2();
      assert(s_calls == 3);
  
@@ -7017,7 +7792,7 @@ index b5dec8a..9cbde31 100644
      s_sdl_controllers[0] = (SDL_GameController*)&s_gone_gc;   /* GetAttached says no */
      pad_poll_sdl2();
      assert(s_sdl_controllers[0] == NULL && s_rumble[0].lo == 0 && s_rumble[0].sent_ms == 0);
-@@ -110,6 +165,9 @@ static void test_set_act_direct(void)
+@@ -110,6 +173,9 @@ static void test_set_act_direct(void)
  
  int main(void)
  {
@@ -7029,10 +7804,10 @@ index b5dec8a..9cbde31 100644
      printf("test_pad_rumble: ok\n");
 diff --git a/libs/input/tests/test_pad_sensor_mode.c b/libs/input/tests/test_pad_sensor_mode.c
 new file mode 100644
-index 0000000..a1b051e
+index 0000000..9e551e0
 --- /dev/null
 +++ b/libs/input/tests/test_pad_sensor_mode.c
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,60 @@
 +/* cellPadInfoSensorMode / cellPadSetSensorMode: they agree with the SENSOR_MODE
 + * capability the virtual pad advertises, refuse a closed library or a bad
 + * port, and Set toggles CELL_PAD_SETTING_SENSOR_ON in the port setting without
@@ -7043,6 +7818,14 @@ index 0000000..a1b051e
 + *         -o /tmp/test_pad_sensor_mode && /tmp/test_pad_sensor_mode
 + */
 +#include "../cellPad.c"
++
++/* The DualSense extras (light bar, player lights, gyro): not exercised here. */
++void SDL_GameControllerSetPlayerIndex(SDL_GameController* gc, int i) { (void)gc; (void)i; }
++SDL_bool SDL_GameControllerHasLED(SDL_GameController* gc) { (void)gc; return SDL_FALSE; }
++int SDL_GameControllerSetLED(SDL_GameController* gc, Uint8 r, Uint8 g, Uint8 b) { (void)gc; (void)r; (void)g; (void)b; return 0; }
++SDL_bool SDL_GameControllerHasSensor(SDL_GameController* gc, SDL_SensorType t) { (void)gc; (void)t; return SDL_FALSE; }
++int SDL_GameControllerSetSensorEnabled(SDL_GameController* gc, SDL_SensorType t, SDL_bool on) { (void)gc; (void)t; (void)on; return -1; }
++int SDL_GameControllerGetSensorData(SDL_GameController* gc, SDL_SensorType t, float* d, int n) { (void)gc; (void)t; (void)d; (void)n; return -1; }
 +#include <assert.h>
 +#include <sys/mman.h>
 +uint8_t* vm_base;

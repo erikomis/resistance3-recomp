@@ -169,6 +169,39 @@ The runner keeps Resistance 2's defaults (SPURS kernel-style scheduling,
 switch to turn it off for comparison, documented in `port/main.cpp` and
 `tools/play.sh`.
 
+## Playing with a PS5 controller (DualSense)
+
+Plug the DualSense in with a USB-C cable, or pair it over Bluetooth (System
+Settings > Bluetooth; hold PS and Create until the light bar blinks). The
+game picks it up at any time, and a Bluetooth controller that drops off and
+comes back takes the same player slot again.
+
+> [!WARNING]
+> **Quit Steam while you play.** With Steam Input on, Steam takes over the
+> DualSense and rewrites what the game sends it: the adaptive triggers and the
+> light bar do nothing (vibration still works). Quit Steam, or turn off
+> PlayStation controller support in Steam > Settings > Controller. The game's
+> log says so when Steam is running.
+
+The buttons are the PS3 pad's, in the same places (Create is SELECT, Options
+is START). What the DualSense adds, on the launcher's Controls page under
+Vibration:
+
+| | |
+| --- | --- |
+| **Adaptive triggers** | R2 has a gun's trigger click: it fires at the click, about half way (`PS3_PAD_FIRE_AT` moves it), and buzzes while you shoot; L2 has a light resistance. |
+| **Vibration** | Strength from 0 to 200% (above 100% strengthens the weak rumbles). |
+| **Light bar** | Orange by default, or red, blue, white, purple, off; it glows red when you take hits and with explosions (can be switched off). |
+| **Player lights** | Show which player the controller is. |
+| **Gyro aim** | Off, Low, Medium or High. Turn and tilt the controller to fine-tune your aim while you hold the left trigger; "Always on" uses it all the time. The right stick keeps working. |
+| **Mute button** | Turns the game's sound off and on; the button's own light shows it is muted (`PS3_PAD_MUTE_BUTTON=0` turns this off). |
+| **Battery** | The game's log says when the battery gets low and when it is almost empty (`PS3_PAD_BATTERY=0` turns this off). |
+| **Sound through the controller** | With the USB cable the DualSense is a sound output: pick "DualSense Wireless Controller" as the launcher's audio output to hear the game on its speaker or the headphones plugged into it. |
+
+The mute button does this only while you have not given it another job in the
+controls. A DualShock 4 gets the vibration, the light bar and gyro aim; an
+Xbox controller gets the vibration.
+
 ## Updating the toolkit patch
 
 Change the toolkit in `./ps3recomp`, then:

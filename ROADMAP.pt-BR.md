@@ -9,6 +9,8 @@ sendo trabalhado.
 
 ## Resumo (2026-11-13)
 
+- **O DualSense, vindo do port do Resistance 1 (2026-11-14):** gatilhos adaptáveis (o clique de arma no R2, atirando no clique e vibrando enquanto atira; a resistência leve no L2), a barra de luz no laranja da série ficando vermelha com tiros, as luzes de jogador, a mira por giroscópio enquanto segura o gatilho esquerdo (ou sempre), os bits de economia de energia limpos ao abrir e uma linha no log quando o Steam segura o controle, o botão de mudo silenciando o jogo com a luz dele, e uma linha de bateria fraca no log. Controles > Vibração no launcher tem as opções. O `libs/input/tests/test_pad_adaptive.c` confere tudo num DualSense falso. Os testes de controle do próprio R3 já não linkavam antes disto (os ganchos de depuração PAD_SCRIPT do cellPad chamam `ppu_bctrl_ring_dump_all`, `ppu_dump_inputsys` e `ppu_statescan_diff`); passam com um substituto dessas três na linha de comando. Ainda não testado com um DualSense de verdade no R3.
+
 - **Jogável no começo da campanha, a 30 fps.** O disco 01.00 está traduzido e
   compilado; instalação, vídeos, menus, novo jogo, o porão de Haven e as ruas
   de Haven rodam corretamente, com colisão, menu de pausa e save/continuar

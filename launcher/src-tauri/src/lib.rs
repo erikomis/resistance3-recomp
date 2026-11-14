@@ -141,6 +141,19 @@ pub struct Settings {
     /// PS3_RUMBLE=0 when off; PS3_RUMBLE_STRENGTH in percent (0-200).
     pub rumble: bool,
     pub rumble_strength: u32,
+    /// PS3_PAD_ADAPTIVE=0 when off: a DualSense's triggers get a feel (a gun
+    /// click on R2, light resistance on L2, R2 buzzing while firing).
+    pub adaptive_triggers: bool,
+    /// PS3_PAD_LIGHT: the DualSense / DualShock 4 light bar, "" (the game's
+    /// colour), "off", or RRGGBB.
+    pub pad_light: String,
+    /// PS3_PAD_LIGHT_HIT=0 when off: the light bar glows red with the
+    /// game's rumble (hits, explosions).
+    pub pad_light_hit: bool,
+    /// PS3_PAD_GYRO: gyro aim, percent (0 = off).
+    pub gyro: u32,
+    /// PS3_PAD_GYRO_MODE=always: gyro aim without holding the left trigger.
+    pub gyro_always: bool,
     /// PS3_AUDIO_VOLUME (0-100, 100 = the default), PS3_AUDIO_MUTE=1 when
     /// muted, PS3_AUDIO_DEVICE (the output whose name contains it; empty =
     /// the system's default; macOS/Linux).
@@ -257,6 +270,11 @@ impl Default for Settings {
             mouse_capture: true,
             rumble: true,
             rumble_strength: 100,
+            adaptive_triggers: true,
+            pad_light: String::new(),
+            pad_light_hit: true,
+            gyro: 0,
+            gyro_always: false,
             audio_volume: 100,
             audio_mute: false,
             audio_device: String::new(),
@@ -1261,6 +1279,22 @@ fn launch_env(s: &Settings, disc: &Path, play: &Path, input: &InputEnv) -> Vec<(
     } else if s.rumble_strength != 100 {
         set("PS3_RUMBLE_STRENGTH", s.rumble_strength.min(200).to_string());
     }
+    if !s.adaptive_triggers {
+        set("PS3_PAD_ADAPTIVE", "0".into());
+    }
+    let light = s.pad_light.trim();
+    if light == "off" || (light.len() == 6 && light.chars().all(|c| c.is_ascii_hexdigit())) {
+        set("PS3_PAD_LIGHT", light.to_string());
+    }
+    if !s.pad_light_hit {
+        set("PS3_PAD_LIGHT_HIT", "0".into());
+    }
+    if s.gyro > 0 {
+        set("PS3_PAD_GYRO", s.gyro.min(400).to_string());
+        if s.gyro_always {
+            set("PS3_PAD_GYRO_MODE", "always".into());
+        }
+    }
     // Audio: only what differs from the default (full volume, the system's
     // output). The runtime mutes on any PS3_AUDIO_MUTE value, so it is
     // passed only when on.
@@ -1808,6 +1842,8 @@ async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<Status
 /// the name; the window then labels (or, for the optional game patches,
 /// hides) the setting rather than pass a variable nothing reads.
 const FEATURE_MARKERS: &[&str] = &[
+    "PS3_PAD_ADAPTIVE",                // DualSense adaptive triggers
+    "PS3_PAD_GYRO",                    // DualSense light bar and gyro aim
     "PS3_INPUT_MAP",                   // keyboard/mouse bindings, mouse camera, rumble
     "PS3_LUT_STRENGTH",                // SMAA and the present pass's filters
     "PS3_RES_SCALE",                   // internal resolution
@@ -3605,6 +3641,23 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dualsense_light_gyro_and_triggers_env() {
+        let mut st = Settings { pad_light: "1e64ff".into(), pad_light_hit: false, gyro: 150, gyro_always: true, adaptive_triggers: false, ..Default::default() };
+        let e: BTreeMap<String, String> = launch_env(&st, Path::new("/d"), Path::new("/p"), &InputEnv::default()).into_iter().collect();
+        assert_eq!(e["PS3_PAD_LIGHT"], "1e64ff");
+        assert_eq!(e["PS3_PAD_LIGHT_HIT"], "0");
+        assert_eq!(e["PS3_PAD_GYRO"], "150");
+        assert_eq!(e["PS3_PAD_GYRO_MODE"], "always");
+        assert_eq!(e["PS3_PAD_ADAPTIVE"], "0");
+        st.pad_light = "zz0000".into(); // not a colour: nothing passed
+        st.gyro = 0;
+        let e: BTreeMap<String, String> = launch_env(&st, Path::new("/d"), Path::new("/p"), &InputEnv::default()).into_iter().collect();
+        assert!(!e.contains_key("PS3_PAD_LIGHT") && !e.contains_key("PS3_PAD_GYRO") && !e.contains_key("PS3_PAD_GYRO_MODE"));
+        let d: BTreeMap<String, String> = launch_env(&Settings::default(), Path::new("/d"), Path::new("/p"), &InputEnv::default()).into_iter().collect();
+        assert!(!d.contains_key("PS3_PAD_LIGHT") && !d.contains_key("PS3_PAD_LIGHT_HIT") && !d.contains_key("PS3_PAD_GYRO") && !d.contains_key("PS3_PAD_ADAPTIVE"));
+    }
 
     #[test]
     fn audio_outputs_from_system_profiler() {

@@ -193,12 +193,77 @@ static void peek_thread(std::string spec, unsigned ms)
     }
 }
 
+/* RES_POKE_STR=<find>=<replace>[@<from s>[+<for s>]][;...]: a debugging aid.
+ * From <from> seconds in (default 60), every 2 s for <for> seconds (default
+ * 120), every occurrence of the byte string <find> in the guest's readable
+ * memory is overwritten with <replace>, NUL-padded to <find>'s length
+ * (<replace> may not be longer). Meant for steering data the game loads at
+ * run time -- e.g. the level a new game starts in -- without a save that
+ * gets there. Logs each replacement's guest address. */
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+static void poke_str_thread(std::string find, std::string repl, unsigned from_s, unsigned for_s)
+{
+    std::this_thread::sleep_for(std::chrono::seconds(from_s));
+    const auto t_end = std::chrono::steady_clock::now() + std::chrono::seconds(for_s);
+    std::string pad = repl; pad.resize(find.size(), '\0');
+    unsigned total = 0;
+    while (std::chrono::steady_clock::now() < t_end) {
+        mach_vm_address_t addr = (mach_vm_address_t)vm_base;
+        const mach_vm_address_t end = (mach_vm_address_t)vm_base + 0x100000000ull;
+        while (addr < end) {
+            mach_vm_size_t size = 0; natural_t depth = 1;
+            vm_region_submap_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
+            if (mach_vm_region_recurse(mach_task_self(), &addr, &size, &depth,
+                                       (vm_region_recurse_info_t)&info, &cnt) != KERN_SUCCESS) break;
+            if (addr >= end) break;
+            mach_vm_address_t a0 = addr, a1 = addr + size > end ? end : addr + size;
+            if ((info.protection & (VM_PROT_READ | VM_PROT_WRITE)) == (VM_PROT_READ | VM_PROT_WRITE) && !info.is_submap) {
+                uint8_t* b = (uint8_t*)a0; size_t n = (size_t)(a1 - a0);
+                for (size_t i = 0; n >= find.size() && i <= n - find.size(); ) {
+                    void* hit = memmem(b + i, n - i, find.data(), find.size());
+                    if (!hit) break;
+                    uint8_t* h = (uint8_t*)hit;
+                    memcpy(h, pad.data(), pad.size());
+                    fprintf(stderr, "[res-poke] \"%s\" -> \"%s\" at guest 0x%08X\n", find.c_str(),
+                            repl.c_str(), (unsigned)(h - vm_base));
+                    ++total;
+                    i = (size_t)(h - b) + find.size();
+                }
+            }
+            addr = a1;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    fprintf(stderr, "[res-poke] \"%s\": %u replacement(s)\n", find.c_str(), total);
+}
+
 extern "C" void res_apply_patches(void)
 {
     if (const char* peek = getenv("RES_PEEK")) {
         const char* ms = getenv("RES_PEEK_MS");
         if (vm_base && *peek)
             std::thread(peek_thread, std::string(peek), ms ? (unsigned)atoi(ms) : 2000u).detach();
+    }
+    if (const char* poke = getenv("RES_POKE_STR")) {
+        std::string all(poke);
+        size_t p0 = 0;
+        while (vm_base && p0 < all.size()) {
+            size_t p1 = all.find(';', p0); if (p1 == std::string::npos) p1 = all.size();
+            std::string one = all.substr(p0, p1 - p0); p0 = p1 + 1;
+            unsigned from_s = 60, for_s = 120;
+            size_t at = one.find('@');
+            if (at != std::string::npos) {
+                std::string t = one.substr(at + 1); one = one.substr(0, at);
+                from_s = (unsigned)atoi(t.c_str());
+                size_t plus = t.find('+'); if (plus != std::string::npos) for_s = (unsigned)atoi(t.c_str() + plus + 1);
+            }
+            size_t eq = one.find('=');
+            if (eq == std::string::npos || eq == 0) continue;
+            std::string f = one.substr(0, eq), r = one.substr(eq + 1);
+            if (r.size() > f.size()) { fprintf(stderr, "[res-poke] \"%s\" is longer than \"%s\": ignored\n", r.c_str(), f.c_str()); continue; }
+            std::thread(poke_str_thread, f, r, from_s, for_s).detach();
+        }
     }
     const char* http = getenv("RES_HTTP_POLL_COMPAT");
     if (!(http && http[0] == '0'))

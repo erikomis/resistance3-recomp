@@ -1168,6 +1168,8 @@ fn launch_env(s: &Settings, disc: &Path, play: &Path, input: &InputEnv) -> Vec<(
     let mut env: Vec<(String, String)> = Vec::new();
     let mut set = |k: &str, v: String| env.push((k.to_string(), v));
     set("PS3_VFS_ROOT", s_(disc));
+    // The Dock icon: the disc's own PS3_GAME/ICON0.PNG (tools/play.sh).
+    set("PS3_WINDOW_ICON", "game".to_string());
     set("PS3_HDD0_ROOT", s_(&play.join("dev_hdd0")));
     set("PS3_HDD1_ROOT", s_(&play.join("dev_hdd1")));
     if s.video {

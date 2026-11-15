@@ -20006,7 +20006,7 @@ index baba40f..f10654e 100644
  
  /* Present one frame: clear the drawable to the colour last received through the
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index 5b20d8a..b3c1e31 100644
+index 5b20d8a..ce2e9ed 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
 @@ -56,6 +56,22 @@
@@ -20367,9 +20367,54 @@ index 5b20d8a..b3c1e31 100644
  #if !TARGET_OS_IPHONE
  /* Visibility also changes for hide/order-out/minimize. Only an actual
   * close of this backend's window ends its presentation session. */
-@@ -597,12 +917,23 @@ static int create_window_impl(const char* title)
+@@ -580,6 +900,42 @@ static void window_close_observer_start(NSWindow* window)
+         }];
+ }
+ 
++/* The Dock icon: PS3_WINDOW_ICON is a picture's path, "game" or "none". The
++ * executable has none of its own, so the Dock shows a generic "exec" one.
++ * "game" is the player's own copy's PS3_GAME/ICON0.PNG under PS3_VFS_ROOT
++ * (or the working folder), so nothing of the game ships with the build. A wide
++ * icon (a PS3 ICON0 is 320x176) is centred on a transparent square rather than
++ * stretched. From the inFAMOUS 2 port. */
++static void apply_icon(void)
++{
++    const char* e = getenv("PS3_WINDOW_ICON");
++    if (!e || !*e || !strcmp(e, "none") || !strcmp(e, "0")) return;
++    char path[2048];
++    if (!strcmp(e, "game")) {
++        const char* root = getenv("PS3_VFS_ROOT");
++        snprintf(path, sizeof path, "%s/PS3_GAME/ICON0.PNG", root && *root ? root : ".");
++    } else {
++        snprintf(path, sizeof path, "%s", e);
++    }
++    NSImage* img = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:path]];
++    if (!img) {
++        fprintf(stderr, "PS3_WINDOW_ICON: %s is not an image AppKit reads\n", path);
++        return;
++    }
++    const NSSize sz = [img size];
++    if (sz.width > 0 && sz.height > 0 && sz.width != sz.height) {
++        const CGFloat d = sz.width > sz.height ? sz.width : sz.height;
++        NSImage* src = img;
++        img = [NSImage imageWithSize:NSMakeSize(d, d) flipped:NO
++                      drawingHandler:^BOOL(NSRect dst) {
++            (void)dst;
++            [src drawInRect:NSMakeRect((d - sz.width) / 2, (d - sz.height) / 2, sz.width, sz.height)];
++            return YES;
++        }];
++    }
++    [NSApp setApplicationIconImage:img];
++}
++
+ static int create_window_impl(const char* title)
+ {
+     [NSApplication sharedApplication];
+@@ -596,13 +952,25 @@ static int create_window_impl(const char* title)
+     window_close_observer_start(s_window);
  
      [s_window setTitle:[NSString stringWithUTF8String:(title ? title : "ps3recomp")]];
++    apply_icon();
      [s_window center];
 +    [s_window setAcceptsMouseMovedEvents:YES];   /* the mouse camera (cellPad.c) */
 +
@@ -20392,7 +20437,7 @@ index 5b20d8a..b3c1e31 100644
  
      NSView* view = [s_window contentView];
      [view setWantsLayer:YES];
-@@ -610,10 +941,35 @@ static int create_window_impl(const char* title)
+@@ -610,10 +978,35 @@ static int create_window_impl(const char* title)
  
      [s_window makeKeyAndOrderFront:nil];
      [NSApp activateIgnoringOtherApps:YES];
@@ -20428,7 +20473,7 @@ index 5b20d8a..b3c1e31 100644
  static int create_window(const char* title)
  {
      if ([NSThread isMainThread])
-@@ -761,6 +1117,10 @@ static void dump_shader(const char* name, const char* text)
+@@ -761,6 +1154,10 @@ static void dump_shader(const char* name, const char* text)
  static MTLCompileOptions* guest_compile_options(void)
  {
      MTLCompileOptions* o = [MTLCompileOptions new];
@@ -20439,7 +20484,7 @@ index 5b20d8a..b3c1e31 100644
      /* IEEE comparisons. The decompilers flush a NaN result to zero with
       * `x == x`, and the alpha test compares with isunordered; Metal's default
       * fast math is free to fold both away. */
-@@ -1799,6 +2159,14 @@ static MTLBlendFactor blend_factor_to_metal(u32 f)
+@@ -1799,6 +2196,14 @@ static MTLBlendFactor blend_factor_to_metal(u32 f)
      case 0x0306: return MTLBlendFactorDestinationColor;
      case 0x0307: return MTLBlendFactorOneMinusDestinationColor;
      case 0x0308: return MTLBlendFactorSourceAlphaSaturated;
@@ -20454,7 +20499,7 @@ index 5b20d8a..b3c1e31 100644
      default:     return MTLBlendFactorOne;
      }
  }
-@@ -2193,11 +2561,50 @@ static void release_surfaces(void)
+@@ -2193,11 +2598,50 @@ static void release_surfaces(void)
  
  #include "rsx_draw_engine.h"
  
@@ -20509,7 +20554,7 @@ index 5b20d8a..b3c1e31 100644
  #define ENG_MAX_SAMPLERS 256
  #define ENG_ALIGN        256u
  /* One frame's staging. Past it the backend submits and waits rather than
-@@ -2216,15 +2623,82 @@ static void release_surfaces(void)
+@@ -2216,15 +2660,82 @@ static void release_surfaces(void)
  static u32 s_eng_obj_free[ENG_MAX_OBJECTS];
  static u32 s_eng_obj_free_count;
  static u8 s_eng_obj_retired[ENG_MAX_OBJECTS];
@@ -20592,7 +20637,7 @@ index 5b20d8a..b3c1e31 100644
  
  /* Compiled MSL functions, keyed on the HLSL the decompilers emitted: one
   * program is translated and compiled once however many pipeline variants
-@@ -2232,18 +2706,46 @@ static void release_surfaces(void)
+@@ -2232,18 +2743,46 @@ static void release_surfaces(void)
  typedef struct { u64 hash; id<MTLFunction> fn; } EngFunc;
  static EngFunc s_eng_func[ENG_MAX_FUNCS];
  static u32 s_eng_func_count;
@@ -20641,7 +20686,7 @@ index 5b20d8a..b3c1e31 100644
  } EngRecKind;
  
  typedef struct {
-@@ -2256,6 +2758,11 @@ static void release_surfaces(void)
+@@ -2256,6 +2795,11 @@ static void release_surfaces(void)
      u32 pipeline;
      MTLPrimitiveType topology;
      u32 vb_off, stride, vertex_count;
@@ -20653,7 +20698,7 @@ index 5b20d8a..b3c1e31 100644
      u32 ib_off, index_count;
      u32 vs_cb_off, vs_cb_bytes;
      u32 ps_cb_off, ps_cb_bytes;
-@@ -2271,15 +2778,65 @@ static void release_surfaces(void)
+@@ -2271,15 +2815,65 @@ static void release_surfaces(void)
      float clear_depth;
      u8    clear_stencil;
      u32   resolve_dst;          /* snapshot/resolve destination texture */
@@ -20719,7 +20764,7 @@ index 5b20d8a..b3c1e31 100644
  /* What the bind_* calls have accumulated for the next draw. */
  static EngRecord s_eng_pending;
  
-@@ -2287,19 +2844,49 @@ static void release_surfaces(void)
+@@ -2287,19 +2881,49 @@ static void release_surfaces(void)
  static id<MTLLibrary>             s_eng_helper_lib;
  static id<MTLRenderPipelineState> s_eng_blit_pso;
  static MTLPixelFormat             s_eng_blit_pso_fmt;
@@ -20769,7 +20814,7 @@ index 5b20d8a..b3c1e31 100644
  static id<MTLRenderPipelineState> s_eng_fxaa_pso;
  static MTLPixelFormat             s_eng_fxaa_pso_fmt;
  static id<MTLTexture>             s_eng_fxaa_tex;
-@@ -2311,19 +2898,89 @@ static float eng_sharpen_from(const char* e)
+@@ -2311,19 +2935,89 @@ static float eng_sharpen_from(const char* e)
      return !(v > 0.0) ? 0.0f : v > 1.0 ? 1.0f : (float)v;
  }
  
@@ -20863,7 +20908,7 @@ index 5b20d8a..b3c1e31 100644
  }
  
  static NSString* const kEngHelperMSL = @
-@@ -2336,6 +2993,25 @@ static void eng_post_options(void)
+@@ -2336,6 +3030,25 @@ static void eng_post_options(void)
  "    o.uv = float2(p.x, 1.0 - p.y);\n"
  "    return o;\n"
  "}\n"
@@ -20889,7 +20934,7 @@ index 5b20d8a..b3c1e31 100644
  "fragment float4 eng_blit_fs(BOut i [[stage_in]],\n"
  "                            texture2d<float> src [[texture(0)]],\n"
  "                            sampler s [[sampler(0)]]) {\n"
-@@ -2345,11 +3021,14 @@ static void eng_post_options(void)
+@@ -2345,11 +3058,14 @@ static void eng_post_options(void)
   * the non-scaling form: a cross whose negative weight grows where the 3x3
   * neighbourhood has headroom), at the source's texel spacing, then the video
   * out's gamma. sharp = 0 is the plain sample. */
@@ -20906,7 +20951,7 @@ index 5b20d8a..b3c1e31 100644
  "    float4 c = src.sample(s, i.uv);\n"
  "    if (p.sharp > 0.0) {\n"
  "        float2 d = p.px;\n"
-@@ -2370,6 +3049,31 @@ static void eng_post_options(void)
+@@ -2370,6 +3086,31 @@ static void eng_post_options(void)
  "        float3 w = amp * (-1.0 / mix(8.0, 5.0, saturate(p.sharp)));\n"
  "        c.rgb = saturate((b * w + l * w + r * w + h * w + e) / (1.0 + 4.0 * w));\n"
  "    }\n"
@@ -20938,7 +20983,7 @@ index 5b20d8a..b3c1e31 100644
  "    if (p.gamma != 1.0) c.rgb = pow(max(c.rgb, 0.0), float3(p.gamma));\n"
  "    return c;\n"
  "}\n"
-@@ -2464,7 +3168,31 @@ static void eng_post_options(void)
+@@ -2464,7 +3205,31 @@ static void eng_post_options(void)
  "fragment float eng_depth_fs(BOut i [[stage_in]],\n"
  "                            depth2d<float> src [[texture(0)]],\n"
  "                            sampler s [[sampler(0)]]) {\n"
@@ -20971,7 +21016,7 @@ index 5b20d8a..b3c1e31 100644
  "}\n";
  
  static u32 eng_obj_add(id<MTLTexture> t)
-@@ -2478,6 +3206,9 @@ static u32 eng_obj_add(id<MTLTexture> t)
+@@ -2478,6 +3243,9 @@ static u32 eng_obj_add(id<MTLTexture> t)
          slot = s_eng_obj_count++;
      }
      s_eng_obj[slot] = t;
@@ -20981,7 +21026,7 @@ index 5b20d8a..b3c1e31 100644
      return slot + 1;
  }
  
-@@ -2486,36 +3217,223 @@ static u32 eng_obj_add(id<MTLTexture> t)
+@@ -2486,36 +3254,223 @@ static u32 eng_obj_add(id<MTLTexture> t)
      return (handle && handle <= s_eng_obj_count) ? s_eng_obj[handle - 1] : nil;
  }
  
@@ -21212,7 +21257,7 @@ index 5b20d8a..b3c1e31 100644
  static MTLPixelFormat eng_pixel_format(rsx_be_format f)
  {
      switch (f) {
-@@ -2538,22 +3456,43 @@ static MTLPixelFormat eng_pixel_format(rsx_be_format f)
+@@ -2538,22 +3493,43 @@ static MTLPixelFormat eng_pixel_format(rsx_be_format f)
  /* ---- staging ------------------------------------------------------------- */
  
  static void eng_encode_and_commit(id<MTLTexture> present_dst);
@@ -21261,7 +21306,7 @@ index 5b20d8a..b3c1e31 100644
          s_eng_stage_cap = cap;
      }
      *out_off = start;
-@@ -2569,8 +3508,67 @@ static int eng_stage_copy(const void* src, u32 bytes, u32* out_off)
+@@ -2569,8 +3545,67 @@ static int eng_stage_copy(const void* src, u32 bytes, u32* out_off)
      return 1;
  }
  
@@ -21329,7 +21374,7 @@ index 5b20d8a..b3c1e31 100644
  static int eng_init(void* user, u32 width, u32 height)
  {
      (void)user; (void)width; (void)height;
-@@ -2592,13 +3590,27 @@ static int eng_init(void* user, u32 width, u32 height)
+@@ -2592,13 +3627,27 @@ static int eng_init(void* user, u32 width, u32 height)
      sd.minFilter = MTLSamplerMinMagFilterLinear;
      sd.magFilter = MTLSamplerMinMagFilterLinear;
      s_eng_linear_sampler = [s_dev newSamplerStateWithDescriptor:sd];
@@ -21357,7 +21402,7 @@ index 5b20d8a..b3c1e31 100644
      for (u32 i = 0; i < s_eng_pipe_count; i++) {
          s_eng_pipe[i].pso = nil;
          s_eng_pipe[i].ds = nil;
-@@ -2607,20 +3619,38 @@ static void eng_shutdown(void* user)
+@@ -2607,20 +3656,38 @@ static void eng_shutdown(void* user)
      for (u32 i = 0; i < s_eng_samp_count; i++) s_eng_samp[i].samp = nil;
      s_eng_obj_count = s_eng_obj_free_count = 0;
      memset(s_eng_obj_retired, 0, sizeof s_eng_obj_retired);
@@ -21397,7 +21442,7 @@ index 5b20d8a..b3c1e31 100644
  }
  
  static u32 s_ft_flush_reason;   /* PS3_FTRACE: why the commit in progress was asked for */
-@@ -2712,20 +3742,55 @@ static u32 eng_color_target_create(void* user, rsx_be_format fmt, u32 w, u32 h,
+@@ -2712,20 +3779,55 @@ static u32 eng_color_target_create(void* user, rsx_be_format fmt, u32 w, u32 h,
  {
      (void)user;
      if (!s_dev || !w || !h) return 0;
@@ -21457,7 +21502,7 @@ index 5b20d8a..b3c1e31 100644
  }
  
  static u32 eng_surface_view(void* user, u32 surface, u32 remap, u32 rsx_format)
-@@ -2733,11 +3798,45 @@ static u32 eng_surface_view(void* user, u32 surface, u32 remap, u32 rsx_format)
+@@ -2733,11 +3835,45 @@ static u32 eng_surface_view(void* user, u32 surface, u32 remap, u32 rsx_format)
      (void)user;
      id<MTLTexture> t = eng_obj(surface);
      if (!t) return 0;
@@ -21505,7 +21550,7 @@ index 5b20d8a..b3c1e31 100644
      u8 sel[4];
      rsx_texture_component_remap(remap, rsx_format & 0x9Fu, sel);
      id<MTLTexture> v =
-@@ -2748,13 +3847,16 @@ static u32 eng_surface_view(void* user, u32 surface, u32 remap, u32 rsx_format)
+@@ -2748,13 +3884,16 @@ static u32 eng_surface_view(void* user, u32 surface, u32 remap, u32 rsx_format)
                                   swizzle:MTLTextureSwizzleChannelsMake(
                                               swizzle_sel(sel[1]), swizzle_sel(sel[2]),
                                               swizzle_sel(sel[3]), swizzle_sel(sel[0]))];
@@ -21523,7 +21568,7 @@ index 5b20d8a..b3c1e31 100644
      return handle;
  }
  
-@@ -2765,13 +3867,13 @@ static u32 eng_color_snapshot(void* user, u32 surface)
+@@ -2765,45 +3904,192 @@ static u32 eng_color_snapshot(void* user, u32 surface)
      (void)user;
      id<MTLTexture> src = eng_obj(surface);
      if (!src || [src textureType] != MTLTextureType2D || [src sampleCount] != 1 ||
@@ -21536,13 +21581,15 @@ index 5b20d8a..b3c1e31 100644
      td.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
 -    const u32 copy = eng_obj_add([s_dev newTextureWithDescriptor:td]);
 +    const u32 copy = eng_obj_add_scaled([s_dev newTextureWithDescriptor:td], eng_obj_is_scaled(surface));
-     if (!copy) { s_eng_dropped++; return 0; }
-     EngRecord* r = &s_eng_rec[s_eng_rec_count++];
-     memset(r, 0, sizeof *r);
-@@ -2781,29 +3883,176 @@ static u32 eng_color_snapshot(void* user, u32 surface)
-     return copy;
- }
- 
++    if (!copy) { s_eng_dropped++; return 0; }
++    EngRecord* r = &s_eng_rec[s_eng_rec_count++];
++    memset(r, 0, sizeof *r);
++    r->kind = ENG_REC_COLOR_SNAPSHOT;
++    r->rt[0] = surface;
++    r->resolve_dst = copy;
++    return copy;
++}
++
 +/* The top-left w x h of a colour target (rsx_draw_backend.color_snapshot_rect)
 + * as a texture of that size, copied in command order like the whole-target
 + * snapshot above; the record carries the copied size, in the target's own
@@ -21565,17 +21612,17 @@ index 5b20d8a..b3c1e31 100644
 +    td.storageMode = MTLStorageModePrivate;
 +    td.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
 +    const u32 copy = eng_obj_add_scaled([s_dev newTextureWithDescriptor:td], scaled);
-+    if (!copy) { s_eng_dropped++; return 0; }
-+    EngRecord* r = &s_eng_rec[s_eng_rec_count++];
-+    memset(r, 0, sizeof *r);
-+    r->kind = ENG_REC_COLOR_SNAPSHOT;
-+    r->rt[0] = surface;
-+    r->resolve_dst = copy;
+     if (!copy) { s_eng_dropped++; return 0; }
+     EngRecord* r = &s_eng_rec[s_eng_rec_count++];
+     memset(r, 0, sizeof *r);
+     r->kind = ENG_REC_COLOR_SNAPSHOT;
+     r->rt[0] = surface;
+     r->resolve_dst = copy;
 +    r->sc[2] = pw;
 +    r->sc[3] = ph;
-+    return copy;
-+}
-+
+     return copy;
+ }
+ 
 +/* rsx_draw_backend.copy_rect: recorded in the stream, encoded as a pass on
 + * the destination under a scissor (eng_copy_rect_fs). With PS3_RES_SCALE
 + * the rectangles and the source step are taken to each image's pixels. */
@@ -21719,7 +21766,7 @@ index 5b20d8a..b3c1e31 100644
      if (!s_eng_depth_pso) {
          MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
          pd.vertexFunction   = [s_eng_helper_lib newFunctionWithName:@"eng_fullscreen_vs"];
-@@ -2821,9 +4070,17 @@ static u32 eng_depth_snapshot(void* user, u32 depth, u32 w, u32 h)
+@@ -2821,9 +4107,17 @@ static u32 eng_depth_snapshot(void* user, u32 depth, u32 w, u32 h)
          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
                                                             width:w height:h
                                                         mipmapped:NO];
@@ -21739,14 +21786,12 @@ index 5b20d8a..b3c1e31 100644
  
      EngRecord* r = &s_eng_rec[s_eng_rec_count++];
      memset(r, 0, sizeof *r);
-@@ -2833,71 +4090,576 @@ static u32 eng_depth_snapshot(void* user, u32 depth, u32 w, u32 h)
+@@ -2833,71 +4127,576 @@ static u32 eng_depth_snapshot(void* user, u32 depth, u32 w, u32 h)
      return dst;
  }
  
 -/* ---- pipelines ----------------------------------------------------------- */
 -
--static id<MTLFunction> eng_function(const char* hlsl, int stage,
--                                    const char* what)
 +/* A depth target as the bytes a colour format reads from a Z24S8 buffer
 + * (rsx_draw_backend.depth_snapshot_rgba8), recorded in the stream like the
 + * snapshot above. One persistent RGBA8 copy per depth target and size: each
@@ -21758,17 +21803,7 @@ index 5b20d8a..b3c1e31 100644
 + * third size replaces the older of the two; the depth target's release frees
 + * both. */
 +static u32 eng_depth_snapshot_rgba8(void* user, u32 depth, u32 w, u32 h)
- {
--    const u64 hash = fnv1a64(hlsl, (u32)strlen(hlsl), 1469598103934665603ull);
--    for (u32 i = 0; i < s_eng_func_count; i++)
--        if (s_eng_func[i].hash == hash) return s_eng_func[i].fn;
--    if (s_eng_func_count >= ENG_MAX_FUNCS) return nil;
--
--    id<MTLFunction> fn = nil;
--    char name[64];
--    snprintf(name, sizeof name, "%s_%016llx.hlsl", what, (unsigned long long)hash);
--    dump_shader(name, hlsl);
--    if (rsx_hlsl_to_msl(hlsl, stage, s_msl, sizeof s_msl, s_log, sizeof s_log) != 0) {
++{
 +    (void)user;
 +    id<MTLTexture> src = eng_obj(depth);
 +    const int scaled = eng_obj_is_scaled(depth);   /* PS3_RES_SCALE */
@@ -22072,12 +22107,16 @@ index 5b20d8a..b3c1e31 100644
 +    memset(&s_sb, 0, sizeof s_sb);
 +}
 +
-+static id<MTLFunction> eng_function(const char* hlsl, int stage,
-+                                    const char* what)
-+{
+ static id<MTLFunction> eng_function(const char* hlsl, int stage,
+                                     const char* what)
+ {
 +    const int si = stage == RSX_SHADER_STAGE_VERTEX ? 0 : 1;
-+    const u64 hash = fnv1a64(hlsl, (u32)strlen(hlsl), 1469598103934665603ull);
-+    id<MTLFunction> fn = nil;
+     const u64 hash = fnv1a64(hlsl, (u32)strlen(hlsl), 1469598103934665603ull);
+-    for (u32 i = 0; i < s_eng_func_count; i++)
+-        if (s_eng_func[i].hash == hash) return s_eng_func[i].fn;
+-    if (s_eng_func_count >= ENG_MAX_FUNCS) return nil;
+-
+     id<MTLFunction> fn = nil;
 +    int found = 0, full = 0;
 +    pthread_mutex_lock(&s_eng_func_lock);
 +    for (u32 i = 0; i < s_eng_func_count; i++)
@@ -22102,9 +22141,10 @@ index 5b20d8a..b3c1e31 100644
 +        if (!own) return nil;
 +        msl = own; log = own + sizeof s_eng_msl;
 +    }
-+    char name[64];
-+    snprintf(name, sizeof name, "%s_%016llx.hlsl", what, (unsigned long long)hash);
-+    dump_shader(name, hlsl);
+     char name[64];
+     snprintf(name, sizeof name, "%s_%016llx.hlsl", what, (unsigned long long)hash);
+     dump_shader(name, hlsl);
+-    if (rsx_hlsl_to_msl(hlsl, stage, s_msl, sizeof s_msl, s_log, sizeof s_log) != 0) {
 +    /* PS3_SHADER_CACHE: the translation from an earlier run. */
 +    const u64 sc_key = sc_on() ? fnv1a64(&stage, sizeof stage, fnv1a64(hlsl, (u32)strlen(hlsl), s_sc_salt)) : 0;
 +    const uint64_t sb_t0 = sb_on() ? ps3_ft_now() : 0;
@@ -22152,15 +22192,15 @@ index 5b20d8a..b3c1e31 100644
          snprintf(name, sizeof name, "%s %016llx", what, (unsigned long long)hash);
 -        fn = compile_guest_function(s_msl, name);
 +        fn = compile_guest_function(msl, name);
-+    }
-+    if (sb_t0) {
-+        const uint64_t sb_t2 = ps3_ft_now();
-+        s_sb.tr[si] += (double)(sb_t1 - sb_t0) / 1e6;
-+        s_sb.co[si] += (double)(sb_t2 - sb_t1) / 1e6;
      }
 -    s_eng_func[s_eng_func_count].hash = hash;
 -    s_eng_func[s_eng_func_count].fn   = fn;
 -    s_eng_func_count++;
++    if (sb_t0) {
++        const uint64_t sb_t2 = ps3_ft_now();
++        s_sb.tr[si] += (double)(sb_t1 - sb_t0) / 1e6;
++        s_sb.co[si] += (double)(sb_t2 - sb_t1) / 1e6;
++    }
 +    free(own);
 +    pthread_mutex_lock(&s_eng_func_lock);
 +    if (s_eng_func_count < eng_func_cap()) {
@@ -22222,12 +22262,12 @@ index 5b20d8a..b3c1e31 100644
 +        vd.attributes[slot].offset      = (NSUInteger)(rank[k] * 16u);
 +        vd.attributes[slot].bufferIndex = MTL_VB_INDEX - k;
 +        rank[k]++;
-+    }
+     }
+-    vd.layouts[MTL_VB_INDEX].stride = vertex_stride;
 +    for (u32 k = 0; k < layout->n_streams; k++) {
 +        if (!rank[k]) return nil;
 +        vd.layouts[MTL_VB_INDEX - k].stride = rank[k] * 16u;
-     }
--    vd.layouts[MTL_VB_INDEX].stride = vertex_stride;
++    }
 +    return vd;
 +}
  
@@ -22366,7 +22406,7 @@ index 5b20d8a..b3c1e31 100644
      /* nv40 COLOR_MASK byte layout: B=[0:7] G=[8:15] R=[16:23] A=[24:31], any
       * nonzero byte turning that channel on. */
      MTLColorWriteMask wm = MTLColorWriteMaskNone;
-@@ -2915,9 +4677,8 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+@@ -2915,9 +4714,8 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
       * stale. The count is rt_count, the set the engine resolved, and the
       * fragment function's own output count is whatever its program exports;
       * Metal accepts either side being the larger one. */
@@ -22378,7 +22418,7 @@ index 5b20d8a..b3c1e31 100644
          MTLColorWriteMask twm = wm;
          int tblend = rs->blend_enable != 0;
          /* PS3RECOMP_METAL_MRT_MASK: 1 (default) the hardware rule above;
-@@ -2926,8 +4687,8 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+@@ -2926,8 +4724,8 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
           * is off, with per-target blend. */
          static int mrt_mode = -1;
          if (mrt_mode < 0) { const char* e = getenv("PS3RECOMP_METAL_MRT_MASK"); mrt_mode = e ? atoi(e) : 1; }
@@ -22389,7 +22429,7 @@ index 5b20d8a..b3c1e31 100644
              if (mrt_mode == 1 || nib == 0) {
                  twm = MTLColorWriteMaskNone;
                  if (nib & 1u) twm |= MTLColorWriteMaskAlpha;
-@@ -2935,28 +4696,859 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+@@ -2935,28 +4733,859 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
                  if (nib & 4u) twm |= MTLColorWriteMaskGreen;
                  if (nib & 8u) twm |= MTLColorWriteMaskBlue;
              }
@@ -22586,8 +22626,8 @@ index 5b20d8a..b3c1e31 100644
 +        if (logged++ < 8)
 +            fprintf(stderr, "[pipeline cache] archive: pipeline %016llx cannot be serialized, left out\n",
 +                    [keys[lo] unsignedLongLongValue]);
-         return 0;
-     }
++        return 0;
++    }
 +    if (logged++ < 8) {
 +        NSString* why = [err localizedDescription];
 +        if (why.length > 120) why = [why substringFromIndex:why.length - 120];
@@ -23181,8 +23221,8 @@ index 5b20d8a..b3c1e31 100644
 +        static u32 logged;
 +        if (!logged++) fprintf(stderr, "[RSX metal] pipeline table full (%u): new pipelines fail"
 +                                       " (PS3RECOMP_METAL_MAX_PIPES)\n", eng_pipe_cap());
-+        return 0;
-+    }
+         return 0;
+     }
 +    if (s_eng_pipe_count && (s_eng_pipe_count & 511u) == 0u)
 +        fprintf(stderr, "[RSX metal] %u pipelines, %u functions\n", s_eng_pipe_count, s_eng_func_count);
 +    const uint64_t sb_t0 = sb_on() ? ps3_ft_now() : 0;   /* PS3_SHADER_TIMING */
@@ -23263,7 +23303,7 @@ index 5b20d8a..b3c1e31 100644
  
      /* Depth and stencil are pipeline state in D3D12 and an encoder object in
       * Metal, so the engine's render state splits here rather than upstream. */
-@@ -2988,13 +5580,15 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+@@ -2988,13 +5617,15 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
          }
      }
      id<MTLDepthStencilState> ds = [s_dev newDepthStencilStateWithDescriptor:dd];
@@ -23280,7 +23320,7 @@ index 5b20d8a..b3c1e31 100644
      s_eng_pipe[slot].cull = MTLCullModeNone;
      if (rs->cull_enable && rs->cull_face)
          s_eng_pipe[slot].cull = (rs->cull_face == 0x0404u || rs->cull_face == 0x0408u)
-@@ -3004,6 +5598,40 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+@@ -3004,6 +5635,40 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
      s_eng_pipe[slot].winding = (rs->front_face == 0x0901u)
                                     ? MTLWindingCounterClockwise
                                     : MTLWindingClockwise;
@@ -23321,7 +23361,7 @@ index 5b20d8a..b3c1e31 100644
      return slot + 1;
  }
  
-@@ -3048,10 +5676,19 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
+@@ -3048,10 +5713,19 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
                    | ((u64)d->wrap_s << 4) | ((u64)d->wrap_t << 8)
                    | ((u64)d->wrap_r << 12)
                    | ((u64)(u32)(d->min_lod * 256.0f) << 16)
@@ -23343,7 +23383,7 @@ index 5b20d8a..b3c1e31 100644
      MTLSamplerDescriptor* sd = [MTLSamplerDescriptor new];
      sd.minFilter = d->min_linear ? MTLSamplerMinMagFilterLinear
                                   : MTLSamplerMinMagFilterNearest;
-@@ -3065,7 +5702,18 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
+@@ -3065,7 +5739,18 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
      sd.sAddressMode = gcm_wrap_to_metal(d->wrap_s);
      sd.tAddressMode = gcm_wrap_to_metal(d->wrap_t);
      sd.rAddressMode = gcm_wrap_to_metal(d->wrap_r);
@@ -23363,7 +23403,7 @@ index 5b20d8a..b3c1e31 100644
      if (d->min_linear && d->mip_present && eng_aniso() > 1)
          sd.maxAnisotropy = (NSUInteger)eng_aniso();
      id<MTLSamplerState> s = [s_dev newSamplerStateWithDescriptor:sd];
-@@ -3076,90 +5724,428 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
+@@ -3076,90 +5761,428 @@ static int eng_sampler_slot(const rsx_be_sampler_desc* d)
      return slot;
  }
  
@@ -23841,7 +23881,7 @@ index 5b20d8a..b3c1e31 100644
      r->vertex_count = vertex_count;
      r->ib_off       = ib_off;
      r->index_count  = indices ? index_count : 0;
-@@ -3174,7 +6160,7 @@ static void eng_clear_color(void* user, u32 surface, const float rgba[4])
+@@ -3174,7 +6197,7 @@ static void eng_clear_color(void* user, u32 surface, const float rgba[4])
                     ((u32)(rgba[0] * 255.0f + 0.5f) << 16) |
                     ((u32)(rgba[1] * 255.0f + 0.5f) <<  8) |
                      (u32)(rgba[2] * 255.0f + 0.5f);
@@ -23850,7 +23890,7 @@ index 5b20d8a..b3c1e31 100644
      EngRecord* r = &s_eng_rec[s_eng_rec_count++];
      memset(r, 0, sizeof *r);
      r->kind  = ENG_REC_CLEAR_COLOR;
-@@ -3187,7 +6173,7 @@ static void eng_clear_depth_stencil(void* user, u32 depth, u32 flags,
+@@ -3187,7 +6210,7 @@ static void eng_clear_depth_stencil(void* user, u32 depth, u32 flags,
                                      float depth_value, u8 stencil)
  {
      (void)user;
@@ -23859,7 +23899,7 @@ index 5b20d8a..b3c1e31 100644
      EngRecord* r = &s_eng_rec[s_eng_rec_count++];
      memset(r, 0, sizeof *r);
      r->kind = ENG_REC_CLEAR_DS;
-@@ -3197,39 +6183,185 @@ static void eng_clear_depth_stencil(void* user, u32 depth, u32 flags,
+@@ -3197,39 +6220,185 @@ static void eng_clear_depth_stencil(void* user, u32 depth, u32 flags,
      r->clear_stencil = stencil;
  }
  
@@ -24066,7 +24106,7 @@ index 5b20d8a..b3c1e31 100644
      }
      /* An indexed draw is really indexed here: the index buffer is what keeps a
       * strip's shared vertices from being fetched and uploaded per triangle.
-@@ -3291,6 +6423,114 @@ static int eng_encode_clear(id<MTLCommandBuffer> cb, const EngRecord* r)
+@@ -3291,6 +6460,114 @@ static int eng_encode_clear(id<MTLCommandBuffer> cb, const EngRecord* r)
      return 1;
  }
  
@@ -24181,7 +24221,7 @@ index 5b20d8a..b3c1e31 100644
  /* One pass per contiguous run of draws against the same attachments, with any
   * clears immediately ahead of it folded into its load actions. A clear whose
   * targets the following draw does not share becomes a pass of its own, which
-@@ -3305,8 +6545,13 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3305,8 +6582,13 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              const EngRecord* r = &s_eng_rec[i++];
              id<MTLTexture> src = eng_obj(r->rt[0]);
              id<MTLTexture> dst = eng_obj(r->resolve_dst);
@@ -24197,7 +24237,7 @@ index 5b20d8a..b3c1e31 100644
                  s_eng_dropped++; continue;
              }
              id<MTLBlitCommandEncoder> copy = [cb blitCommandEncoder];
-@@ -3314,17 +6559,44 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3314,17 +6596,44 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              s_ft_copies++;
              [copy copyFromTexture:src sourceSlice:0 sourceLevel:0
                     sourceOrigin:MTLOriginMake(0, 0, 0)
@@ -24244,7 +24284,7 @@ index 5b20d8a..b3c1e31 100644
              MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
              rp.colorAttachments[0].texture     = dst;
              rp.colorAttachments[0].loadAction  = MTLLoadActionDontCare;
-@@ -3332,7 +6604,7 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3332,7 +6641,7 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
              if (!e) { s_eng_encoding_failed = 1; continue; }
              s_ft_resolves++;
@@ -24253,7 +24293,7 @@ index 5b20d8a..b3c1e31 100644
              [e setFragmentTexture:src atIndex:0];
              [e setFragmentSamplerState:s_eng_point_sampler atIndex:0];
              [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-@@ -3340,6 +6612,15 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3340,6 +6649,15 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              continue;
          }
  
@@ -24269,7 +24309,7 @@ index 5b20d8a..b3c1e31 100644
          /* The clears queued ahead of this pass. A colour clear names one
           * surface and an MRT set arrives as one clear per target, so they are
           * collected rather than compared: they become load actions on the
-@@ -3354,7 +6635,9 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3354,7 +6672,9 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
          u8 cstencil = 0;
          while (i < s_eng_rec_count && s_eng_rec[i].kind != ENG_REC_DRAW &&
                 s_eng_rec[i].kind != ENG_REC_DEPTH_RESOLVE &&
@@ -24280,7 +24320,7 @@ index 5b20d8a..b3c1e31 100644
              const EngRecord* r = &s_eng_rec[i];
              if (r->kind == ENG_REC_CLEAR_COLOR) {
                  u32 k = 0;
-@@ -3467,6 +6750,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3467,6 +6787,8 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              rp.renderTargetHeight = [zbuf height];
          }
  
@@ -24289,7 +24329,7 @@ index 5b20d8a..b3c1e31 100644
          id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
          /* A draw's pipeline declares as many colour attachments as its record
           * named, so a pass that could not bind them all takes its clears and
-@@ -3475,10 +6760,11 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3475,10 +6797,11 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
              s_eng_encoding_failed = 1;
              if (enc) [enc endEncoding];
              while (i < s_eng_rec_count && s_eng_rec[i].kind == ENG_REC_DRAW &&
@@ -24302,7 +24342,7 @@ index 5b20d8a..b3c1e31 100644
          while (i < s_eng_rec_count && s_eng_rec[i].kind == ENG_REC_DRAW &&
                 eng_record_targets_are(&s_eng_rec[i], rt, nrt) &&
                 (s_eng_rec[i].depth == depth ||
-@@ -3536,6 +6822,115 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
+@@ -3536,6 +6859,115 @@ static void eng_encode_records(id<MTLCommandBuffer> cb, id<MTLBuffer> stage)
      return s_eng_fxaa_tex;
  }
  
@@ -24418,7 +24458,7 @@ index 5b20d8a..b3c1e31 100644
  /* Put a surface on the drawable. A straight blit would need matching formats
   * and sizes; a full-screen sample needs neither, and the guest's surfaces are
   * routinely a different size from the window.
-@@ -3549,6 +6944,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+@@ -3549,6 +6981,7 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
      if (!src || !dst || !s_eng_helper_lib) return;
      eng_post_options();
      if (s_eng_fxaa) { id<MTLTexture> t = eng_fxaa(cb, src); if (t) src = t; }
@@ -24426,7 +24466,7 @@ index 5b20d8a..b3c1e31 100644
      if (!s_eng_blit_pso || s_eng_blit_pso_fmt != [dst pixelFormat]) {
          MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
          pd.vertexFunction   = [s_eng_helper_lib newFunctionWithName:@"eng_fullscreen_vs"];
-@@ -3576,10 +6972,16 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+@@ -3576,10 +7009,16 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
       * setting): out = in^gamma, as RPCS3's calibration pass applies it. The
       * sharpening taps are one source texel apart. */
      { extern float cellAvconfExt_display_gamma(void);
@@ -24447,7 +24487,7 @@ index 5b20d8a..b3c1e31 100644
      [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
      [e endEncoding];
  }
-@@ -3600,6 +7002,8 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3600,6 +7039,8 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
      @autoreleasepool {
          id<CAMetalDrawable> drawable = nil;
          id<MTLTexture> dst = nil;
@@ -24456,7 +24496,7 @@ index 5b20d8a..b3c1e31 100644
          const int windowed_present = (present_dst && !s_headless);
          { const uint64_t w0 = PS3_FT_ON() ? ps3_ft_now() : 0;
            if (windowed_present) dispatch_semaphore_wait(s_inflight, DISPATCH_TIME_FOREVER);
-@@ -3608,6 +7012,13 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3608,6 +7049,13 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
          if (present_dst) {
              if (s_headless) {
                  dst = s_offscreen;
@@ -24470,7 +24510,7 @@ index 5b20d8a..b3c1e31 100644
              } else {
                  drawable = [s_layer nextDrawable];
                  if (!drawable) {           /* compositor is busy; skip */
-@@ -3619,32 +7030,69 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3619,32 +7067,69 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
          }
  
          id<MTLBuffer> stage = nil;
@@ -24545,7 +24585,7 @@ index 5b20d8a..b3c1e31 100644
              if (ft_w0) {
                  const uint64_t w1 = ps3_ft_now();
                  ps3_ft_span(PS3_FT_GPU_WAIT, 0, present_dst ? 1u : 0u,
-@@ -3654,6 +7102,7 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3654,6 +7139,7 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
                      ps3_ft_span(PS3_FT_GPU_EXEC, s_ft_passes, s_ft_resolves | (s_ft_copies << 16),
                                  present_dst ? 1u : 0u, w1 - (uint64_t)(gpu_s * 1e9), w1);
              }
@@ -24553,7 +24593,7 @@ index 5b20d8a..b3c1e31 100644
              s_eng_checked_completed = [cb status] == MTLCommandBufferStatusCompleted &&
                                        ![cb error] && !s_eng_dropped && !s_eng_encoding_failed;
              if (!s_eng_checked_completed) s_eng_encoding_failed = 1;
-@@ -3670,11 +7119,13 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3670,11 +7156,13 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
  
          if (s_eng_dropped) {
              fprintf(stderr, "[rsx engine/metal] dropped %u record(s) (cap %d)\n",
@@ -24568,7 +24608,7 @@ index 5b20d8a..b3c1e31 100644
          eng_collect_retired_objects();
      }
  }
-@@ -3683,7 +7134,8 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+@@ -3683,7 +7171,8 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
   * Headless submits have completed; windowed captures fence the same queue. */
  static void eng_dump_frame(id<MTLTexture> src)
  {
@@ -24578,7 +24618,7 @@ index 5b20d8a..b3c1e31 100644
      if (!path || !*path) return;
      static unsigned frame;
      if ((++frame % 120) != 0) return;
-@@ -3715,13 +7167,99 @@ static void eng_dump_frame(id<MTLTexture> src)
+@@ -3715,13 +7204,99 @@ static void eng_dump_frame(id<MTLTexture> src)
      free(rgba);
  }
  
@@ -24678,7 +24718,7 @@ index 5b20d8a..b3c1e31 100644
  }
  
  static void eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
-@@ -3730,8 +7268,22 @@ static void eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
+@@ -3730,8 +7305,22 @@ static void eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
      (void)user;
      id<MTLTexture> t = eng_obj(surface);
      if (!t || !out || !out_pitch || !w || !h) return;
@@ -24702,7 +24742,7 @@ index 5b20d8a..b3c1e31 100644
      [t getBytes:out bytesPerRow:out_pitch
       fromRegion:MTLRegionMake2D(x, y, w, h) mipmapLevel:0];
      if (ft_t0) ps3_ft_span(PS3_FT_READBACK, 0, w, h, ft_t0, ps3_ft_now());
-@@ -3741,8 +7293,29 @@ static void eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
+@@ -3741,8 +7330,29 @@ static void eng_readback(void* user, u32 surface, u32 x, u32 y, u32 w, u32 h,
   * requested rectangle to CPU-coherent shared storage. Resolving only the ROI
   * would rescale the source and change its coordinates. Never expose bytes
   * until both the resolve and the copy have completed successfully. */
@@ -24732,7 +24772,7 @@ index 5b20d8a..b3c1e31 100644
  {
      id<MTLTexture> src = eng_obj(depth);
      if (!s_dev || !s_queue || !src || !out || !w || !h ||
-@@ -3763,8 +7336,8 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+@@ -3763,8 +7373,8 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
          id<MTLBuffer> staging = [s_dev newBufferWithLength:copy_pitch * h
                                                   options:MTLResourceStorageModeShared];
          if (!staging || ![staging contents]) return -1;
@@ -24743,7 +24783,7 @@ index 5b20d8a..b3c1e31 100644
          if (!snap) return -1;
          eng_encode_and_commit(nil);
          if (!s_eng_checked_completed) { eng_obj_release(user, snap); return -1; }
-@@ -3792,8 +7365,93 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+@@ -3792,8 +7402,93 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
      }
  }
  
@@ -24837,7 +24877,7 @@ index 5b20d8a..b3c1e31 100644
      .init                 = eng_init,
      .shutdown             = eng_shutdown,
      .submit_and_wait      = eng_submit_and_wait,
-@@ -3804,26 +7462,41 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+@@ -3804,26 +7499,41 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
      .texture_upload_3d    = eng_texture_upload_3d,
      .color_target_create  = eng_color_target_create,
      .color_target_release = eng_obj_release,
@@ -24879,7 +24919,7 @@ index 5b20d8a..b3c1e31 100644
      .present              = eng_present,
      .readback             = eng_readback,
  };
-@@ -3835,6 +7508,7 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
+@@ -3835,6 +7545,7 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
      @autoreleasepool {
          if (width)  s_width  = width;
          if (height) s_height = height;
@@ -24887,7 +24927,7 @@ index 5b20d8a..b3c1e31 100644
  
          const char* hl = getenv("PS3RECOMP_METAL_HEADLESS");
          s_headless = (hl && *hl && *hl != '0');
-@@ -3855,7 +7529,19 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
+@@ -3855,7 +7566,19 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
          s_headless = 1;
          rc = create_offscreen();
  #else
@@ -24908,7 +24948,7 @@ index 5b20d8a..b3c1e31 100644
  #endif
          if (rc != 0) {
              fprintf(stderr, "[RSX metal] surface creation failed\n");
-@@ -3906,14 +7592,30 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
+@@ -3906,14 +7629,30 @@ int rsx_metal_backend_init(u32 width, u32 height, const char* title)
           * passes both ways. PS3RECOMP_RSX_ENGINE=vtable is the way back, and
           * it stays that way until the vtable path has nothing left to say. */
          rsx_draw_engine_set_default(1);
@@ -24940,7 +24980,7 @@ index 5b20d8a..b3c1e31 100644
                  [[s_dev name] UTF8String], s_width, s_height,
                  s_guest_shaders ? "on" : (rsx_hlsl_to_msl_available() ? "off (env)" : "off (translator not built)"),
                  s_eng_active ? "register-file draw engine" : "vtable");
-@@ -3925,6 +7627,7 @@ void rsx_metal_backend_shutdown(void)
+@@ -3925,6 +7664,7 @@ void rsx_metal_backend_shutdown(void)
  {
      @autoreleasepool {
          if (s_ready) rsx_set_backend(NULL);
@@ -24948,7 +24988,7 @@ index 5b20d8a..b3c1e31 100644
          if (s_eng_active) rsx_draw_engine_shutdown();
          rsx_draw_engine_set_backend(NULL);
          /* Reclaim every in-flight slot so no command buffer is still
-@@ -3939,6 +7642,7 @@ void rsx_metal_backend_shutdown(void)
+@@ -3939,6 +7679,7 @@ void rsx_metal_backend_shutdown(void)
                  dispatch_semaphore_signal(s_inflight);
              s_inflight = nil;
          }
@@ -24956,7 +24996,7 @@ index 5b20d8a..b3c1e31 100644
  #if !TARGET_OS_IPHONE
          /* Only touch the main queue when there is AppKit state to tear down:
           * headless runs never pump it, and a dispatch_sync there would hang. */
-@@ -3972,10 +7676,19 @@ void rsx_metal_backend_shutdown(void)
+@@ -3972,10 +7713,19 @@ void rsx_metal_backend_shutdown(void)
      }
  }
  
@@ -24976,7 +25016,7 @@ index 5b20d8a..b3c1e31 100644
      @autoreleasepool {
          for (;;) {
              NSEvent* ev = [NSApp nextEventMatchingMask:NSEventMaskAny
-@@ -3983,8 +7696,15 @@ static int pump_messages_impl(void)
+@@ -3983,8 +7733,15 @@ static int pump_messages_impl(void)
                                                  inMode:NSDefaultRunLoopMode
                                                 dequeue:YES];
              if (!ev) break;
@@ -24992,7 +25032,7 @@ index 5b20d8a..b3c1e31 100644
      }
  #endif
      return atomic_load(&s_closed) ? -1 : 0;
-@@ -4018,14 +7738,28 @@ void rsx_metal_backend_present(void)
+@@ -4018,14 +7775,28 @@ void rsx_metal_backend_present(void)
          if (ft_t0) ps3_ft_span(PS3_FT_PRESENT, 0, 0, 0, ft_t0, ps3_ft_now());
          return;
      }
@@ -25021,7 +25061,7 @@ index 5b20d8a..b3c1e31 100644
          } else {
              drawable = [s_layer nextDrawable];
              if (!drawable) {            /* compositor is busy; skip this frame */
-@@ -4104,8 +7838,10 @@ void rsx_metal_backend_present(void)
+@@ -4104,8 +7875,10 @@ void rsx_metal_backend_present(void)
              [cb waitUntilCompleted];
          } else {
              dispatch_semaphore_t sem = s_inflight;
@@ -57037,10 +57077,10 @@ index 0000000..9bb6ed8
 +#endif /* PS3RECOMP_HOST_DISPLAY_H */
 diff --git a/tools/host_window/host_window.m b/tools/host_window/host_window.m
 new file mode 100644
-index 0000000..9a5104e
+index 0000000..734cb0c
 --- /dev/null
 +++ b/tools/host_window/host_window.m
-@@ -0,0 +1,1242 @@
+@@ -0,0 +1,1279 @@
 +/*
 + * ps3recomp - host window: one window across an executable swap (macOS)
 + *
@@ -58103,6 +58143,42 @@ index 0000000..9a5104e
 +    NSApp.mainMenu = bar;
 +}
 +
++/* The Dock icon: PS3_WINDOW_ICON is a picture's path, "game" or "none". The
++ * executable has none of its own, so the Dock shows a generic "exec" one.
++ * "game" is the player's own copy's PS3_GAME/ICON0.PNG under PS3_VFS_ROOT
++ * (or the working folder), so nothing of the game ships with the build. A wide
++ * icon (a PS3 ICON0 is 320x176) is centred on a transparent square rather than
++ * stretched. From the inFAMOUS 2 port. */
++static void apply_icon(void)
++{
++    const char* e = getenv("PS3_WINDOW_ICON");
++    if (!e || !*e || !strcmp(e, "none") || !strcmp(e, "0")) return;
++    char path[2048];
++    if (!strcmp(e, "game")) {
++        const char* root = getenv("PS3_VFS_ROOT");
++        snprintf(path, sizeof path, "%s/PS3_GAME/ICON0.PNG", root && *root ? root : ".");
++    } else {
++        snprintf(path, sizeof path, "%s", e);
++    }
++    NSImage* img = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:path]];
++    if (!img) {
++        fprintf(stderr, "PS3_WINDOW_ICON: %s is not an image AppKit reads\n", path);
++        return;
++    }
++    const NSSize sz = [img size];
++    if (sz.width > 0 && sz.height > 0 && sz.width != sz.height) {
++        const CGFloat d = sz.width > sz.height ? sz.width : sz.height;
++        NSImage* src = img;
++        img = [NSImage imageWithSize:NSMakeSize(d, d) flipped:NO
++                      drawingHandler:^BOOL(NSRect dst) {
++            (void)dst;
++            [src drawInRect:NSMakeRect((d - sz.width) / 2, (d - sz.height) / 2, sz.width, sz.height)];
++            return YES;
++        }];
++    }
++    [NSApp setApplicationIconImage:img];
++}
++
 +static void make_window(u_int32_t w, u_int32_t h, NSScreen* scr, int vsync)
 +{
 +    double cw = w, ch = h;
@@ -58208,6 +58284,7 @@ index 0000000..9a5104e
 +        g.cas_after = hd_cas_after_from(getenv("PS3_CAS_AFTER"));
 +        g.down_linear = hd_downscale_linear_from(getenv("PS3_DOWNSCALE_LINEAR"));
 +        make_window(w, h, pick_screen(), hd_vsync_from(getenv("PS3_VSYNC")));
++        apply_icon();
 +        g.window.delegate = delegate;
 +        if (make_surfaces(w, h) != 0) {
 +            fprintf(stderr, "[host window] cannot make %ux%u surfaces\n", w, h);

@@ -76,6 +76,9 @@ res_disc() {
     return 1
 }
 export PS3_VFS_ROOT
+# The Dock icon: your disc's PS3_GAME/ICON0.PNG (a path, or "none" for the
+# generic one).
+export PS3_WINDOW_ICON=${PS3_WINDOW_ICON:-game}
 RES_EBOOT_BIN=${RES_EBOOT_BIN:-${PS3_VFS_ROOT:+$PS3_VFS_ROOT/PS3_GAME/USRDIR/EBOOT.BIN}}
 
 # FFmpeg for the video decoder (built with -DPS3RECOMP_FFMPEG_RUNTIME=ON).

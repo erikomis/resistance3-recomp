@@ -257,10 +257,11 @@ sendo trabalhado.
 - [ ] Medir de novo o espaço em disco de uma instalação completa (o launcher
   e o `tools/install.sh` pedem 8 GB até lá).
 - [x] Publicar o repositório (`erikomis/resistance3-recomp`).
-- [ ] A primeira release do launcher.
+- [x] A primeira release do launcher (v0.1.0, 2026-11-12; o GitHub Releases
+  tem o .dmg e, a partir da v0.1.1, o zip do RecompLauncher).
 - [ ] RecompLauncher: o perfil (`recomplauncher.json`), o `--prepare` sem
-  janela do launcher e o `scripts/package-recomplauncher.sh` já estão aqui;
-  falta uma release com esse zip, um prepare completo num Mac limpo e a
+  janela do launcher e o `scripts/package-recomplauncher.sh` já estão aqui
+  e o zip sai em cada release; falta um prepare completo num Mac limpo e a
   listagem no recomplauncher.com (README do launcher, "RecompLauncher").
 
 ## Depois

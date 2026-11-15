@@ -244,10 +244,11 @@ worked on.
 - [ ] Re-measure the disk space a full install takes (the launcher and
   `tools/install.sh` ask for 8 GB until then).
 - [x] Publish the repository (`erikomis/resistance3-recomp`).
-- [ ] The launcher's first release.
+- [x] The launcher's first release (v0.1.0, 2026-11-12; GitHub Releases has
+  the .dmg and, from v0.1.1, the RecompLauncher zip).
 - [ ] RecompLauncher: the profile (`recomplauncher.json`), the launcher's
-  headless `--prepare` and `scripts/package-recomplauncher.sh` are in; a
-  release with that zip attached, a full prepare on a clean Mac, and the
+  headless `--prepare` and `scripts/package-recomplauncher.sh` are in and
+  the zip ships with each release; a full prepare on a clean Mac and the
   listing on recomplauncher.com are still to do (launcher README,
   "RecompLauncher").
 

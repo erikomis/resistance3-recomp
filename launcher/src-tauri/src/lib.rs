@@ -3821,6 +3821,7 @@ mod tests {
         assert_eq!(e["PS3RECOMP_FP_UNNORM_VOL"], "1");
         assert_eq!(e["PS3_SHADER_CACHE"], "/p/shadercache");
         assert_eq!(e["PS3_SHADER_ASYNC"], "1");
+        assert_eq!(e["PS3_WINDOW_ICON"], "game");
         for k in ["PS3_VERBOSE", "PS3_LANG", "PS3_AA", "PS3_SHARPEN", "PS3_ANISO", "PS3_DISPLAY_GAMMA", "PS3RECOMP_ENG_VCACHE", "PS3RECOMP_ENG_VCACHE_SPLIT", "PS3RECOMP_METAL_BIND_ALL", "PS3_FRAMECLOCK_US", "PS3RECOMP_FFMPEG", "PS3_SHADER_ASYNC_JOBS", "PS3_SHADER_ASYNC_SYNC_HIT", "PS3_ARGV"] {
             assert!(!e.contains_key(k), "{k} passed by default");
         }
@@ -3830,7 +3831,7 @@ mod tests {
             keys,
             [
                 "PS3RECOMP_ENG_VCACHE_STATS", "PS3RECOMP_FP_UNNORM_VOL", "PS3RECOMP_METAL_FPS", "PS3_HDD0_ROOT", "PS3_HDD1_ROOT", "PS3_PAD_LOG",
-                "PS3_SHADER_ASYNC", "PS3_SHADER_CACHE", "PS3_TELEMETRY", "PS3_VFS_ROOT", "RSX_DRAIN_SPIKE_MS",
+                "PS3_SHADER_ASYNC", "PS3_SHADER_CACHE", "PS3_TELEMETRY", "PS3_VFS_ROOT", "PS3_WINDOW_ICON", "RSX_DRAIN_SPIKE_MS",
             ]
         );
         st.game_lang = "pt-br".into();

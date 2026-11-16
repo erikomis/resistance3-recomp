@@ -9,6 +9,13 @@ worked on.
 
 ## Status at a glance (2026-11-13)
 
+- **Selected v0.19 backports (2026-11-16):** faster VMX conversions, direct
+  MFC parameter writes, per-thread PPU/HLE lookup caches, an idle GCM-pump
+  fast path, live guest offset tables, and exact NEON `fi` interpolation.
+  The port keeps its v0.17 base and R3 fixes. Targeted math, cache, DMA and
+  mapping regressions pass; FPS gains have not been measured in gameplay.
+  Sources and validation commands: [v0.19 backports](docs/upstream-v019.md).
+
 - **The DualSense, from the Resistance 1 port (2026-11-14):** adaptive triggers (R2's gun click, firing at the click, buzzing while firing; L2's light resistance), the light bar in the series' orange glowing red with hits, the player lights, gyro aim while the left trigger is held (or always), the power-save bits cleared on open and a log line when Steam holds the controller, the mute button muting the game with its light, and a low-battery line in the log. The launcher's Controls > Vibration has the switches. `libs/input/tests/test_pad_adaptive.c` checks it all on a fake DualSense. R3's own controller tests no longer linked before this (cellPad's PAD_SCRIPT debug hooks call `ppu_bctrl_ring_dump_all`, `ppu_dump_inputsys` and `ppu_statescan_diff`); they pass with a stand-in for those three on the command line. Not yet tried with a physical DualSense in R3.
 
 - **Playable through the start of the campaign, at 30 fps.** The 01.00 disc

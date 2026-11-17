@@ -402,12 +402,28 @@ static DWORD WINAPI frame_clock(LPVOID)
      * 1 moderate, 2 heavy, ...). A drop with drain and gpu both low is the
      * guest (PPU/SPU); therm > 0 at the same moment points at the machine. */
     uint64_t tele_drain_ns = 0, tele_present_ns = 0, tele_gpu_last = 0, tele_cpu_last = 0;
-    const auto tele_span = [telemetry](uint64_t& acc, auto&& fn) {
+    /* PS3_TELEMETRY_CPU=1 (off by default: two thread-clock reads around
+     * every drain and present): the same two spans in CPU time of this
+     * thread, " draincpu= presentcpu=" at the end of the line. The wall-time
+     * figures grow when other processes take the cores; these do not, which
+     * is what an A/B on a busy machine needs. */
+    const char* tele_cpu_env = getenv("PS3_TELEMETRY_CPU");
+    const bool tele_cpu = telemetry && tele_cpu_env && tele_cpu_env[0] == '1';
+    uint64_t tele_drain_cpu = 0, tele_present_cpu = 0;
+    const auto tele_span = [telemetry, tele_cpu](uint64_t& acc, uint64_t& cpu_acc, auto&& fn) {
         if (!telemetry) { fn(); return; }
+#ifdef __APPLE__
+        const uint64_t c0 = tele_cpu ? clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) : 0;
+#endif
         const auto t0 = std::chrono::steady_clock::now();
         fn();
         acc += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
                    std::chrono::steady_clock::now() - t0).count();
+#ifdef __APPLE__
+        if (tele_cpu) cpu_acc += clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - c0;
+#else
+        (void)cpu_acc;
+#endif
     };
     const char* stats_env = getenv("PS3RECOMP_FRAME_STATS");
     const bool frame_stats = stats_env && stats_env[0] == '1';
@@ -481,14 +497,30 @@ static DWORD WINAPI frame_clock(LPVOID)
                 const unsigned long long isteps = __atomic_load_n(&g_spu_interp_tele, __ATOMIC_RELAXED);
                 const unsigned long long drest = __atomic_load_n(&g_spu_depth_restarts, __ATOMIC_RELAXED);
                 static unsigned long long isteps0, drest0;
+                /* rsxcpu: CPU time of this thread (FIFO drain, present, this
+                 * loop), ms per second. drain and present are wall time and
+                 * grow when other processes take the cores; this does not. */
+                static uint64_t rsx_cpu_last;
+                uint64_t rsx_cpu = 0;
+#ifdef __APPLE__
+                rsx_cpu = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
+#endif
+                const unsigned rsx_cpu_ms = (unsigned)((rsx_cpu - rsx_cpu_last) / 1000000u * 1000u / ms);
+                rsx_cpu_last = rsx_cpu;
                 fprintf(stderr, "[tele] frames=%u draws=%u drain=%u present=%u gpu=%u (ms/s) cpu=%u%% footprint=%uMB therm=%d"
-                                " spuint=%.1fM/s spudepth=%llu\n",
+                                " spuint=%.1fM/s spudepth=%llu rsxcpu=%u",
                         flips - tele_flips, rsx_draw_engine_guest_draws(),
                         (unsigned)(tele_drain_ns / 1000000u * 1000u / ms),
                         (unsigned)(tele_present_ns / 1000000u * 1000u / ms),
                         (unsigned)((gpu - tele_gpu_last) / 1000000u * 1000u / ms),
                         (unsigned)((cpu - tele_cpu_last) / 10000000u * 1000u / ms),
-                        rss_mb, therm, (isteps - isteps0) / 1e6 * 1000.0 / ms, drest - drest0);
+                        rss_mb, therm, (isteps - isteps0) / 1e6 * 1000.0 / ms, drest - drest0, rsx_cpu_ms);
+                if (tele_cpu)
+                    fprintf(stderr, " draincpu=%u presentcpu=%u",
+                            (unsigned)(tele_drain_cpu / 1000000u * 1000u / ms),
+                            (unsigned)(tele_present_cpu / 1000000u * 1000u / ms));
+                fputc('\n', stderr);
+                tele_drain_cpu = tele_present_cpu = 0;
                 isteps0 = isteps; drest0 = drest;
                 tele_drain_ns = tele_present_ns = 0;
                 tele_gpu_last = gpu; tele_cpu_last = cpu;
@@ -506,11 +538,11 @@ static DWORD WINAPI frame_clock(LPVOID)
              * after the drain races the guest's next-frame writes and shows a
              * mixed one. */
             if (rsx_ok && cellGcm_take_flip_pending())
-                tele_span(tele_present_ns, [] { present_guest_frame(); });
+                tele_span(tele_present_ns, tele_present_cpu, [] { present_guest_frame(); });
             /* Drain the FIFO every tick. This is what writes the RSX sync-fence
              * labels the game's per-frame logic blocks on, so it has to keep
              * advancing at 60 Hz even while present() throttles. */
-            if (rsx_ok) tele_span(tele_drain_ns, [] { cellGcm_rsx_process_fifo(); });
+            if (rsx_ok) tele_span(tele_drain_ns, tele_drain_cpu, [] { cellGcm_rsx_process_fifo(); });
             next_tick += vblank_us;      /* ~60 Hz by default */
             fired++;
         }
@@ -522,8 +554,8 @@ static DWORD WINAPI frame_clock(LPVOID)
          * The real RSX writes them in microseconds. */
         if (rsx_ok) {
             if (cellGcm_take_flip_pending())
-                tele_span(tele_present_ns, [] { present_guest_frame(); });
-            tele_span(tele_drain_ns, [] { cellGcm_rsx_process_fifo(); });
+                tele_span(tele_present_ns, tele_present_cpu, [] { present_guest_frame(); });
+            tele_span(tele_drain_ns, tele_drain_cpu, [] { cellGcm_rsx_process_fifo(); });
 
             /* Window events at most every 4 ms, as before PS3_FRAMECLOCK_US:
              * a windowed pump is a dispatch_sync to the main thread, and this

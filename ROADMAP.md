@@ -247,7 +247,19 @@ worked on.
   RSX thread went from ~21 to ~17 ms a frame: the shadow-fetch log is
   pre-filtered, runs of plain state words go to the engine in one call,
   wider program memos, index ranges straight from the guest's indices).
-- [ ] 60 fps: the RSX thread under 16 ms a frame; `RES_FOV` in play.
+- [x] The RSX thread under 16 ms a frame (2026-11-17): ~13.6-14 ms in the
+  Haven fight (it was ~16 on the same tree): per-format vertex decode
+  kernels, deduplication through a direct table, index lists written only
+  when read, only the vertex-program constants a program can read staged,
+  vertex-shader text memo, fragment memos patched in place when only their
+  inline constants change, replaced render targets kept per address and
+  taken back, vertex buffers reused by size class. Unlocked, the fight now
+  runs at 53-59 fps on average (median 54-60, 10th percentile 41-48); at
+  the cap, 30 as before.
+- [ ] 60 fps steady: past the RSX thread the guest PPU/SPU threads are the
+  limit; a FIFO desync seen in one long unlocked run while the game ran
+  above 60 fps is to be explained first (`PS3_VBLANK_HZ=120` avoided it);
+  `RES_FOV` in play.
 - [ ] Re-measure the disk space a full install takes (the launcher and
   `tools/install.sh` ask for 8 GB until then).
 - [x] Publish the repository (`erikomis/resistance3-recomp`).

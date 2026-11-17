@@ -261,7 +261,19 @@ sendo trabalhado.
   cair de ~21 para ~17 ms por quadro: o log da leitura-sombra é pré-filtrado,
   sequências de palavras de estado vão ao motor numa chamada só, memos de
   programa maiores, faixas de índice direto dos índices do jogo).
-- [ ] 60 fps: a thread do RSX abaixo de 16 ms por quadro; `RES_FOV` jogando.
+- [x] A thread do RSX abaixo de 16 ms por quadro (2026-11-17): ~13,6-14 ms
+  na luta em Haven (eram ~16 na mesma árvore): kernels de leitura de vértice
+  por formato, deduplicação por tabela direta, listas de índice escritas só
+  quando lidas, só as constantes de vertex program que o programa pode ler,
+  memo do texto de vertex shader, memos de fragment program corrigidos no
+  lugar quando só mudam as constantes embutidas, render targets substituídos
+  guardados por endereço e retomados, buffers de vértice reaproveitados por
+  tamanho. Destravado, a luta fica em 53-59 fps de média (mediana 54-60, 10%
+  piores em 41-48); travado, 30 como antes.
+- [ ] 60 fps estáveis: passada a thread do RSX, o limite são as threads
+  PPU/SPU do jogo; um desync do FIFO visto numa sessão longa destravada,
+  com o jogo acima de 60 fps, precisa ser explicado antes
+  (`PS3_VBLANK_HZ=120` evitou); `RES_FOV` jogando.
 - [ ] Medir de novo o espaço em disco de uma instalação completa (o launcher
   e o `tools/install.sh` pedem 8 GB até lá).
 - [x] Publicar o repositório (`erikomis/resistance3-recomp`).

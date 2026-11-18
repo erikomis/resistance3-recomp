@@ -275,6 +275,7 @@ add_executable(${PROJECT_NAME}
     main.cpp
     stubs.cpp
     patches.cpp
+    r3_look.cpp
     ${PS3RECOMP_SCAFFOLD}
     ${HLE_NID_TABLE}
     ${RECOMP_SOURCES}

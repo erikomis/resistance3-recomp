@@ -88,6 +88,10 @@ As mudanças do Resistance 2 acrescentam:
   `PS3_AA=smaa` (`third_party/smaa` no patch do toolkit, com o arquivo de
   licença). MIT.
 - A [PS3 Developer Wiki](https://www.psdevwiki.com/ps3/).
+- [n0madic/Resistance3-recomp](https://github.com/n0madic/Resistance3-recomp)
+  (o port do disco europeu): a ideia de girar as linhas de orientação do
+  personagem para a mira do mouse, de escalar pelo zoom, e a flag de menu
+  para Enter e Esc (`port/r3_look.cpp` é código nosso; aquele projeto é GPL).
 
 ## Jogo
 

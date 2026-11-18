@@ -172,6 +172,7 @@ static int g_rsx_ready = 0;
 /* patches.cpp: the optional game patches (RES_UNLOCK_FPS, RES_FOV) and
  * compatibility hooks, applied to the loaded ELF before the guest starts. */
 extern "C" void res_apply_patches(void);
+extern "C" void r3_look_init(void);   /* r3_look.cpp: mouse look and menu query */
 extern "C" double g_res_vblank_hz;   /* patches.cpp: the unlock-fps patch's vblank rate */
 
 /* ---------------------------------------------------------------------------
@@ -850,6 +851,7 @@ int main(int argc, char** argv)
     }
 
     res_apply_patches();
+    r3_look_init();
 
     derive_vfs_root(argv[1]);
     printf("[boot] VFS root: %s\n", ppu_vfs_root);

@@ -247,6 +247,12 @@ worked on.
   RSX thread went from ~21 to ~17 ms a frame: the shadow-fetch log is
   pre-filtered, runs of plain state words go to the engine in one call,
   wider program memos, index ranges straight from the guest's indices).
+- [x] Mouse look (2026-11-17): the mouse turns the hero's view by degrees
+  (`port/r3_look.cpp`), not through the right stick the game caps at
+  ~206 degrees/s; scaled by the zoom while aiming; menus, cutscenes and
+  deaths fall back to the stick. Enter/Esc confirm and go back in menus,
+  and the cursor is free there. Options > Controls (camera speed, invert)
+  are not followed yet.
 - [x] The RSX thread under 16 ms a frame (2026-11-17): ~13.6-14 ms in the
   Haven fight (it was ~16 on the same tree): per-format vertex decode
   kernels, deduplication through a direct table, index lists written only

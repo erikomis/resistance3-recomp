@@ -3761,10 +3761,10 @@ index 76c5505..6cdac92 100644
  /* Constants */
  #define CELL_GEM_MAX_NUM   4
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
-index 7fa8cab..6cef463 100644
+index 7fa8cab..c784278 100644
 --- a/libs/input/cellPad.c
 +++ b/libs/input/cellPad.c
-@@ -4,10 +4,41 @@
+@@ -4,10 +4,45 @@
   * Reads real gamepad input from the host and translates to PS3 pad format.
   *
   * Backend selection:
@@ -3789,6 +3789,10 @@ index 7fa8cab..6cef463 100644
 + *   PS3_MOUSE_DEADZONE=<0-120>  first stick step past centre (30)
 + *   PS3_MOUSE_CAPTURE=0         no cursor capture: motion counts whenever
 + *                               the window is key
++ *   PS3_MOUSE_LOOK=0            the mouse is the right stick even when the
++ *                               port has a look hook (cellPad_set_look_hook)
++ *   PS3_MOUSE_LOOK_DEG=<f>      the look hook's degrees per point at SENS 1 (0.12)
++ *   PAD_MOUSE_SCRIPT=<sec>:<dx>:<dy>[:<ms>],...   scripted mouse motion (tests)
 + *   PS3_PAD_SDL=0               ignore physical controllers
 + *   PS3_RUMBLE=0, PS3_RUMBLE_STRENGTH=<0-200>, PS3_RUMBLE_LOG=1   vibration
 + *   PS3_PAD_ADAPTIVE=0, PS3_PAD_FIRE_AT=<10-90>   DualSense adaptive triggers
@@ -3807,7 +3811,7 @@ index 7fa8cab..6cef463 100644
   */
  
  #include <time.h>
-@@ -19,6 +50,8 @@
+@@ -19,6 +54,8 @@
  #include "../../runtime/platform/win32_compat.h"   /* GetTickCount64 on POSIX */
  #include "../../runtime/ppu/ppu_memory.h"   /* GUEST_PTR, vm_write*: guest EA -> host */
  #include "ps3emu/log_first.h"
@@ -3816,7 +3820,7 @@ index 7fa8cab..6cef463 100644
  
  /* PAD_CLOCK=flips: PAD_SCRIPT and PAD_STICK times count guest flips instead of
   * wall-clock seconds. A loaded machine runs a title at a third of its usual
-@@ -53,10 +86,18 @@ static double pad_clock(unsigned long long t0_ms)
+@@ -53,10 +90,24 @@ static double pad_clock(unsigned long long t0_ms)
      #define WIN32_LEAN_AND_MEAN
    #endif
    #include <windows.h>
@@ -3833,10 +3837,16 @@ index 7fa8cab..6cef463 100644
 +static _Atomic int s_port_aiming = -1;
 +void cellPad_host_set_aiming(int aiming) { s_port_aiming = aiming ? 1 : 0; }
 +
++/* Mouse look and menu hooks a port registers (cellPad.h). */
++static int (*s_look_hook)(double yaw_deg, double pitch_deg);
++static int (*s_menu_hook)(void);
++void cellPad_set_look_hook(int (*look)(double yaw_deg, double pitch_deg)) { s_look_hook = look; }
++void cellPad_set_menu_query(int (*in_menu)(void)) { s_menu_hook = in_menu; }
++
  #if PAD_BACKEND_SDL2
    #include <SDL2/SDL.h>
  #endif
-@@ -96,11 +137,121 @@ static PadHostState  s_host_state[PAD_MAX_HOST_PORTS];
+@@ -96,11 +147,121 @@ static PadHostState  s_host_state[PAD_MAX_HOST_PORTS];
  /* Per-port "a report has arrived since your last read" flag; see cellPadGetData. */
  static int s_data_fresh[PAD_MAX_HOST_PORTS];
  
@@ -3958,7 +3968,7 @@ index 7fa8cab..6cef463 100644
  /* ---------------------------------------------------------------------------
   * Rumble (cellPadSetActDirect)
   *
-@@ -113,6 +264,12 @@ static int s_sdl_inited = 0;
+@@ -113,6 +274,12 @@ static int s_sdl_inited = 0;
   * PAD_RUMBLE_HOLD_MS. Large -> the host's low-frequency motor, small -> the
   * high-frequency one, which is how DualShock 4, DualSense and Xbox pads are
   * laid out too.
@@ -3971,7 +3981,7 @@ index 7fa8cab..6cef463 100644
   * -------------------------------------------------------------------------*/
  
  #define PAD_RUMBLE_HOLD_MS     1000   /* one SDL request lasts this long ... */
-@@ -121,16 +278,43 @@ static int s_sdl_inited = 0;
+@@ -121,16 +288,43 @@ static int s_sdl_inited = 0;
  typedef struct {
      u16 lo, hi;                 /* what the host motors were last asked for */
      unsigned long long sent_ms; /* when (pad_now_ms), 0 = nothing to renew */
@@ -4020,7 +4030,7 @@ index 7fa8cab..6cef463 100644
  }
  
  /* ---------------------------------------------------------------------------
-@@ -143,6 +327,39 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
+@@ -143,6 +337,39 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
  #define PAD_STICK_DEADZONE  7849
  #define PAD_TRIGGER_THRESHOLD 30
  
@@ -4060,7 +4070,7 @@ index 7fa8cab..6cef463 100644
  static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
  {
      float normalized;
-@@ -240,7 +457,8 @@ static void pad_poll_xinput(void)
+@@ -240,7 +467,8 @@ static void pad_poll_xinput(void)
          XINPUT_STATE state;
          memset(&state, 0, sizeof(state));
  
@@ -4070,7 +4080,7 @@ index 7fa8cab..6cef463 100644
          if (result != ERROR_SUCCESS) {
              s_host_state[i].connected = 0;
              continue;
-@@ -299,7 +517,8 @@ static void pad_poll_xinput(void)
+@@ -299,7 +527,8 @@ static void pad_poll_xinput(void)
  
  static void pad_init_backend(void)
  {
@@ -4080,7 +4090,7 @@ index 7fa8cab..6cef463 100644
  }
  
  static void pad_shutdown_backend(void)
-@@ -333,79 +552,634 @@ static u8 pad_sdl_trigger_to_u8(int raw)
+@@ -333,79 +562,634 @@ static u8 pad_sdl_trigger_to_u8(int raw)
      return (u8)val;
  }
  
@@ -4503,7 +4513,7 @@ index 7fa8cab..6cef463 100644
 +        cellAudio_host_muted())
 +        pad_mute_light(gc, 1);
 +}
-+
+ 
 +/* Gyro aim: what the controller's turn this poll adds to the right stick,
 + * in SDL axis units. */
 +static void pad_extras_gyro(int p, SDL_GameController* gc, int lt, int* rx, int* ry)
@@ -4562,7 +4572,7 @@ index 7fa8cab..6cef463 100644
 +        if (s_sdl_controllers[p] && s_sdl_ids[p] == id) return p;
 +    return -1;
 +}
- 
++
 +/* Close port p's controller (gone, or shutting down). */
 +static void pad_sdl_close(int p, int gone)
 +{
@@ -4757,7 +4767,7 @@ index 7fa8cab..6cef463 100644
  
          /* Pressure: SDL has digital buttons, so 0 or 255 */
          s_host_state[i].press_up       = (btns & CELL_PAD_CTRL_UP)       ? 255 : 0;
-@@ -419,36 +1193,57 @@ static void pad_poll_sdl2(void)
+@@ -419,36 +1203,57 @@ static void pad_poll_sdl2(void)
          s_host_state[i].press_l1       = (btns & CELL_PAD_CTRL_L1)       ? 255 : 0;
          s_host_state[i].press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
      }
@@ -4828,7 +4838,7 @@ index 7fa8cab..6cef463 100644
      memset(s_rumble, 0, sizeof s_rumble);
  }
  
-@@ -485,6 +1280,240 @@ static unsigned long long pad_now_ms(void)
+@@ -485,6 +1290,354 @@ static unsigned long long pad_now_ms(void)
  #endif
  }
  
@@ -4860,6 +4870,23 @@ index 7fa8cab..6cef463 100644
 + *                            click in the game captures the mouse, and Esc,
 + *                            Cmd or leaving the app releases it)
 + *   PS3_MOUSE_LOG=1          print what the mouse does to the stick
++ *
++ * Mouse look: when the port registers a look hook (cellPad_set_look_hook),
++ * motion goes to it first as a turn in degrees, PS3_MOUSE_LOOK_DEG per point
++ * (0.12) times PS3_MOUSE_SENS, inverted as above: the hook turns the view
++ * itself, so the title's stick rate cap, ramp and dead zone are out of the
++ * way. When the hook declines (a menu, a cutscene) the motion moves the stick
++ * as without one. PS3_MOUSE_LOOK=0 never asks the hook.
++ *
++ * Menus: when the port registers a menu query (cellPad_set_menu_query) and
++ * it says a menu is up, Return and keypad Enter press CROSS and Escape
++ * CIRCLE instead of START (only while they are bound to START), and the
++ * cursor is let go so it can leave the window.
++ *
++ * PAD_MOUSE_SCRIPT="<sec>:<dx>:<dy>[:<ms>],..." moves the mouse by dx, dy
++ * points spread over <ms> (default 500) from <sec> on (PAD_CLOCK as
++ * PAD_SCRIPT), as if the window had sent the motion: input simulation for
++ * testing the mouse look without a mouse.
 + * -------------------------------------------------------------------------*/
 +
 +/* Port-0 state from a button mask and stick positions (0-255, centre 128). */
@@ -4913,7 +4940,10 @@ index 7fa8cab..6cef463 100644
 +}
 +
 +static int s_mouse_on = -1, s_mouse_invert_x, s_mouse_invert_y, s_mouse_dz, s_mouse_capture, s_mouse_log;
++static int s_mouse_look;
 +static float s_mouse_sens;
++static double s_mouse_look_deg;
++static int s_mscript_n = -1;   /* PAD_MOUSE_SCRIPT's motions, -1 = not read yet */
 +static void pad_mouse_settings_load(void)
 +{
 +    if (s_mouse_on >= 0) return;
@@ -4928,6 +4958,11 @@ index 7fa8cab..6cef463 100644
 +    if (s_mouse_dz > 120) s_mouse_dz = 120;
 +    s_mouse_capture  = pad_env_int("PS3_MOUSE_CAPTURE", map->mouse_capture, 1) != 0;
 +    s_mouse_log      = getenv("PS3_MOUSE_LOG") ? 1 : 0;
++    s_mouse_look     = pad_env_int("PS3_MOUSE_LOOK", -1, 1) != 0;
++    s_mscript_n      = -1;
++    e = getenv("PS3_MOUSE_LOOK_DEG");
++    s_mouse_look_deg = e && *e ? atof(e) : 0.12;
++    if (!(s_mouse_look_deg > 0.0 && s_mouse_look_deg < 10.0)) s_mouse_look_deg = 0.12;
 +    s_mouse_on       = pad_env_int("PS3_MOUSE", map->mouse_camera, 1) != 0;
 +}
 +
@@ -4961,13 +4996,77 @@ index 7fa8cab..6cef463 100644
 +    uint32_t f = PS3_HOST_INPUT_ACTIVE;
 +    if (s_mouse_on && pad_input_mode() != PAD_MODE_CONTROLLER) {
 +        f |= PS3_HOST_INPUT_MOUSE_CAMERA;
-+        if (s_mouse_capture) f |= PS3_HOST_INPUT_CAPTURE;
++        if (s_mouse_capture && !(s_menu_hook && s_menu_hook())) f |= PS3_HOST_INPUT_CAPTURE;
 +    }
 +    return f;
 +}
 +
++/* PAD_MOUSE_SCRIPT: the scripted motion due by now, in 1/16 points, added
++ * to *dx and *dy. */
++static void pad_mouse_script(int32_t* dx, int32_t* dy)
++{
++    enum { N = 64 };
++    int n = s_mscript_n;
++    static struct { double t, ms; double dx, dy; double done; } ev[N];
++    static unsigned long long t0;
++    if (n < 0) {
++        n = s_mscript_n = 0;
++        const char* p = getenv("PAD_MOUSE_SCRIPT");
++        if (!p || !*p) return;
++        t0 = GetTickCount64();
++        while (*p && n < N) {
++            char* q;
++            ev[n].t = strtod(p, &q);
++            if (q == p || *q != ':') break;
++            ev[n].dx = strtod(q + 1, &q);
++            if (*q != ':') break;
++            ev[n].dy = strtod(q + 1, &q);
++            ev[n].ms = 500;
++            if (*q == ':') ev[n].ms = strtod(q + 1, &q);
++            if (!(ev[n].ms >= 1)) ev[n].ms = 1;
++            ev[n].done = 0;
++            n++;
++            p = q;
++            while (*p == ',' || *p == ' ') p++;
++        }
++        printf("[cellPad] PAD_MOUSE_SCRIPT: %d motion(s)\n", n); fflush(stdout);
++    }
++    s_mscript_n = n;
++    if (!n) return;
++    const double now = pad_clock(t0);
++    for (int i = 0; i < n; i++) {
++        if (now < ev[i].t || ev[i].done >= 1.0) continue;
++        double frac = (now - ev[i].t) * 1000.0 / ev[i].ms;
++        if (frac > 1.0) frac = 1.0;
++        /* Whole 1/16 points owed so far, so the parts add up to the total. */
++        const int32_t ox = (int32_t)lround(ev[i].dx * 16.0 * ev[i].done), oy = (int32_t)lround(ev[i].dy * 16.0 * ev[i].done);
++        const int32_t nx = (int32_t)lround(ev[i].dx * 16.0 * frac), ny = (int32_t)lround(ev[i].dy * 16.0 * frac);
++        *dx += nx - ox;
++        *dy += ny - oy;
++        ev[i].done = frac;
++    }
++}
++
++/* Motion (1/16 points) -> the port's look hook. 1 if it turned the view. */
++static int pad_mouse_look(int32_t dx, int32_t dy)
++{
++    if (!s_look_hook || !s_mouse_look || (!dx && !dy) || pad_input_mode() == PAD_MODE_CONTROLLER) return 0;
++    const double k = s_mouse_look_deg * (double)s_mouse_sens / 16.0;
++    const double yaw   =  (double)dx * k * (s_mouse_invert_x ? -1.0 : 1.0);   /* right = + */
++    const double pitch = -(double)dy * k * (s_mouse_invert_y ? -1.0 : 1.0);   /* up = + (deltaY > 0 is down) */
++    const int took = s_look_hook(yaw, pitch) != 0;
++    if (s_mouse_log) {
++        static int logged;
++        if (logged < 400) { logged++;
++            printf("[cellPad] mouse look: d=(%d,%d)/16 pt -> yaw %+.3f pitch %+.3f deg: %s\n",
++                   dx, dy, yaw, pitch, took ? "turned" : "declined, stick"); fflush(stdout); }
++    }
++    return took;
++}
++
 +/* Mouse buttons and wheel -> controls in *ctl; motion -> *mrx and *mry (-1
-+ * when the mouse is not moving, so the keys keep the right stick). */
++ * when the mouse is not moving, so the keys keep the right stick), or to the
++ * port's look hook. */
 +static void pad_poll_mouse(ps3_host_input* in, uint32_t* ctl, int* mrx, int* mry)
 +{
 +    static float sx, sy; static unsigned long long last;
@@ -4977,10 +5076,11 @@ index 7fa8cab..6cef463 100644
 +    pad_mouse_settings_load();
 +    /* Drained whatever the setting, so nothing is left to jump the camera
 +     * when the mouse comes back. */
-+    const int32_t dx = atomic_exchange(&in->mouse_dx, 0);
-+    const int32_t dy = atomic_exchange(&in->mouse_dy, 0);
++    int32_t dx = atomic_exchange(&in->mouse_dx, 0);
++    int32_t dy = atomic_exchange(&in->mouse_dy, 0);
 +    const int32_t w  = atomic_exchange(&in->wheel, 0);
 +    if (!s_mouse_on) return;
++    pad_mouse_script(&dx, &dy);
 +    const unsigned long long now = pad_now_ms();
 +    uint32_t b = atomic_load(&in->mouse_buttons);
 +    if ((w > 0 && wheel_acc < 0) || (w < 0 && wheel_acc > 0)) wheel_acc = 0;   /* turned back */
@@ -4994,6 +5094,7 @@ index 7fa8cab..6cef463 100644
 +            if (map->mouse[c] & b) *ctl |= 1u << c;
 +    unsigned long long dt = last ? now - last : 16;
 +    last = now;
++    if (pad_mouse_look(dx, dy)) { sx = sy = 0.0f; return; }   /* the view turned: the stick stays put */
 +    if (dt < 1) dt = 1;
 +    if (dt > 100) dt = 100;                 /* a long gap is not one slow move */
 +    /* px per ms; 1.5 px/ms (a brisk flick) reaches full deflection at SENS 1. */
@@ -5032,6 +5133,29 @@ index 7fa8cab..6cef463 100644
 +    if (keys[0] | keys[1] | keys[2] | keys[3])
 +        for (int c = 0; c < PIM_N_CONTROLS; c++)
 +            if (pim_keys_hit(map, c, keys)) ctl |= 1u << c;
++    /* A menu is up: Return/Enter confirm and Escape goes back. A key keeps
++     * the meaning it had when it went down, so the Escape that opened the
++     * pause menu does not also close it. */
++    if (s_menu_hook) {
++        static const struct { unsigned char vk; int ctl; } mk[] = { {0x24, PIM_CROSS}, {0x4C, PIM_CROSS}, {0x35, PIM_CIRCLE} };
++        static signed char as_menu[3] = { -1, -1, -1 };   /* -1 up, 0 START, 1 the menu's */
++        uint32_t rest[4] = { keys[0], keys[1], keys[2], keys[3] };
++        int moved = 0, menu = -1;
++        for (int i = 0; i < 3; i++) {
++            const unsigned vk = mk[i].vk;
++            const uint32_t bit = 1u << (vk & 31);
++            if (!(keys[vk >> 5] & bit)) { as_menu[i] = -1; continue; }
++            if (as_menu[i] < 0) {
++                if (menu < 0) menu = s_menu_hook() ? 1 : 0;
++                as_menu[i] = (signed char)menu;
++            }
++            if (!as_menu[i] || !(map->key[PIM_START][vk >> 5] & bit)) continue;
++            rest[vk >> 5] &= ~bit;
++            ctl |= 1u << mk[i].ctl;
++            moved = 1;
++        }
++        if (moved && !pim_keys_hit(map, PIM_START, rest)) ctl &= ~(1u << PIM_START);
++    }
 +    int mrx, mry;
 +    pad_poll_mouse(in, &ctl, &mrx, &mry);
 +    if (pad_input_mode() == PAD_MODE_CONTROLLER) { ctl = 0; mrx = mry = -1; }
@@ -5069,7 +5193,7 @@ index 7fa8cab..6cef463 100644
  static void pad_poll_backend(void)
  {
      /* Benign race: two threads may poll in the same tick. That costs one extra
-@@ -492,6 +1521,7 @@ static void pad_poll_backend(void)
+@@ -492,6 +1645,7 @@ static void pad_poll_backend(void)
      static unsigned long long s_last_ms = 0;
      unsigned long long now = pad_now_ms();
      if (s_last_ms && now - s_last_ms < PAD_POLL_INTERVAL_MS) return;
@@ -5077,7 +5201,7 @@ index 7fa8cab..6cef463 100644
      s_last_ms = now;
      /* A real pad streams reports at roughly this rate whether or not anything
       * changed, and libpad buffers them; a fresh sweep is a fresh report for
-@@ -505,7 +1535,20 @@ static void pad_poll_backend(void)
+@@ -505,7 +1659,20 @@ static void pad_poll_backend(void)
  #endif
  #ifdef _WIN32
      if (!s_host_state[0].connected) pad_poll_keyboard();
@@ -5098,7 +5222,7 @@ index 7fa8cab..6cef463 100644
  }
  
  /* ---------------------------------------------------------------------------
-@@ -526,15 +1569,24 @@ s32 cellPadInit(u32 max_connect)
+@@ -526,15 +1693,24 @@ s32 cellPadInit(u32 max_connect)
      if (max_connect == 0 || max_connect > 127)
          return CELL_PAD_ERROR_INVALID_PARAMETER;
  
@@ -5123,7 +5247,7 @@ index 7fa8cab..6cef463 100644
  
      return CELL_OK;
  }
-@@ -546,7 +1598,9 @@ s32 cellPadEnd(void)
+@@ -546,7 +1722,9 @@ s32 cellPadEnd(void)
      if (!s_pad_initialized)
          return CELL_PAD_ERROR_NOT_OPENED;
  
@@ -5133,7 +5257,7 @@ index 7fa8cab..6cef463 100644
  
      s_pad_initialized = 0;
      s_max_connect = 0;
-@@ -716,9 +1770,29 @@ skip_inject: ;
+@@ -716,9 +1894,29 @@ skip_inject: ;
                    held[i]--;
                    data->button[CELL_PAD_BTN_OFFSET_DIGITAL1] |= (u16)(ev[i].mask & 0xFF);
                    data->button[CELL_PAD_BTN_OFFSET_DIGITAL2] |= (u16)((ev[i].mask >> 8) & 0xFF);
@@ -5165,7 +5289,7 @@ index 7fa8cab..6cef463 100644
                }
            }
        } }
-@@ -735,6 +1809,7 @@ skip_inject: ;
+@@ -735,6 +1933,7 @@ skip_inject: ;
       *   echo 0x0040 4 > pad.txt  # DOWN for 4 polls (menus auto-repeat a
       *                            # long hold; the default is 40)
       */
@@ -5173,7 +5297,7 @@ index 7fa8cab..6cef463 100644
      { static int s_pf = -1; static char pf_path[512];
        static unsigned held_mask = 0; static int held_n = 0;
        if (s_pf < 0) { const char* e = getenv("PAD_FILE");
-@@ -746,11 +1821,25 @@ skip_inject: ;
+@@ -746,11 +1945,25 @@ skip_inject: ;
                if (f) {
                    char buf[64]; buf[0] = 0;
                    if (fgets(buf, sizeof buf, f)) {
@@ -5204,7 +5328,7 @@ index 7fa8cab..6cef463 100644
                    }
                    fclose(f);
                    if (held_n > 0) { FILE* w = fopen(pf_path, "wb"); if (w) fclose(w); }
-@@ -782,6 +1871,12 @@ skip_inject: ;
+@@ -782,6 +1995,12 @@ skip_inject: ;
        if (s_st && pad_clock(s_t0) >= s_from && pad_clock(s_t0) < s_until) { hs->analog_lx = s_v[0]; hs->analog_ly = s_v[1];
                    hs->analog_rx = s_v[2]; hs->analog_ry = s_v[3];
                    hs->connected = 1; }
@@ -5217,7 +5341,7 @@ index 7fa8cab..6cef463 100644
        /* PAD_SWEEP=<seconds per step>: walk the sticks through a fixed set of
         * deflections instead of holding one. Guessing a single stick position and
         * re-running costs ~5 minutes a try; a sweep answers "can input move the
-@@ -896,6 +1991,21 @@ emit:
+@@ -896,6 +2115,21 @@ emit:
      }
      {
          unsigned int ea = (unsigned int)(uintptr_t)data_guest;
@@ -5239,7 +5363,7 @@ index 7fa8cab..6cef463 100644
          vm_write32((unsigned long long)ea + 0, (unsigned int)data->len);   /* len (s32) */
          for (int _i = 0; _i < CELL_PAD_MAX_CODES; _i++)                    /* button[] u16 */
              vm_write16((unsigned long long)ea + 4 + (unsigned int)_i * 2, data->button[_i]);
-@@ -946,7 +2056,7 @@ s32 cellPadGetInfo(CellPadInfo2* info)
+@@ -946,7 +2180,7 @@ s32 cellPadGetInfo(CellPadInfo2* info)
                    (s_host_state[i].connected || i == 0));
          vm_write16(gaddr + 0x00C + i * 2, on ? 0x054C : 0);   /* vendor: Sony  */
          vm_write16(gaddr + 0x10A + i * 2, on ? 0x0268 : 0);   /* product: DS3  */
@@ -5248,7 +5372,7 @@ index 7fa8cab..6cef463 100644
      }
      return CELL_OK;
  }
-@@ -973,7 +2083,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
+@@ -973,7 +2207,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
           * boot flows that block until a controller is connected can proceed even
           * with no physical device attached. */
          if (s_host_state[i].connected || i == 0) {
@@ -5257,7 +5381,7 @@ index 7fa8cab..6cef463 100644
              info->port_setting[i]      = s_port_setting[i];
              info->device_capability[i] = CELL_PAD_CAPABILITY_PS3_CONFORMITY
                                         | CELL_PAD_CAPABILITY_PRESS_MODE
-@@ -983,7 +2093,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
+@@ -983,7 +2217,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
              info->device_type[i]       = CELL_PAD_DEV_TYPE_STANDARD;
              connected++;
          } else {
@@ -5266,7 +5390,7 @@ index 7fa8cab..6cef463 100644
          }
      }
      info->now_connect = connected;
-@@ -1028,7 +2138,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
+@@ -1028,7 +2262,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
          /* Same virtual-pad-on-port-0 rule as cellPadGetInfo2, so both views of
           * the ports agree (a game that cross-checks them must see one truth). */
          if ((i < PAD_MAX_HOST_PORTS && s_host_state[i].connected) || i == 0) {
@@ -5275,7 +5399,7 @@ index 7fa8cab..6cef463 100644
              info->port_setting[i]      = s_port_setting[i];
              info->device_capability[i] = CELL_PAD_CAPABILITY_PS3_CONFORMITY
                                         | CELL_PAD_CAPABILITY_PRESS_MODE
-@@ -1040,7 +2150,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
+@@ -1040,7 +2274,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
              info->pclass_profile[i]    = 0;
              connected++;
          } else {
@@ -5284,7 +5408,7 @@ index 7fa8cab..6cef463 100644
          }
      }
      info->now_connect = connected;
-@@ -1104,6 +2214,39 @@ s32 cellPadSetPressMode(u32 port_no, u32 mode)
+@@ -1104,6 +2338,39 @@ s32 cellPadSetPressMode(u32 port_no, u32 mode)
      return CELL_OK;
  }
  
@@ -5324,7 +5448,7 @@ index 7fa8cab..6cef463 100644
  s32 cellPadGetCapabilityInfo(u32 port_no, CellPadCapabilityInfo* info)
  {
      if (!s_pad_initialized)
-@@ -1136,29 +2279,43 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+@@ -1136,29 +2403,43 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
  
      param = GUEST_PTR(param, CellPadActParam*);
  
@@ -5377,7 +5501,7 @@ index 7fa8cab..6cef463 100644
  }
  
 diff --git a/libs/input/cellPad.h b/libs/input/cellPad.h
-index 89c58ab..6619633 100644
+index 89c58ab..bec1ad1 100644
 --- a/libs/input/cellPad.h
 +++ b/libs/input/cellPad.h
 @@ -187,6 +187,8 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info);
@@ -5389,7 +5513,7 @@ index 89c58ab..6619633 100644
  
  /* NID: 0x578E3C98 */
  s32 cellPadGetCapabilityInfo(u32 port_no, CellPadCapabilityInfo* info);
-@@ -200,6 +202,11 @@ s32 cellPadClearBuf(u32 port_no);
+@@ -200,6 +202,23 @@ s32 cellPadClearBuf(u32 port_no);
  /* Internal: call once per frame to update pad state from host input */
  void cellPad_poll(void);
  
@@ -5397,6 +5521,18 @@ index 89c58ab..6619633 100644
 + * (a zoom on/off) reports it here; from the first call the gyro follows it
 + * instead of the controller's left trigger being held. */
 +void cellPad_host_set_aiming(int aiming);
++
++/* Mouse look (keyboard and mouse pad): `look` turns the title's view by
++ * yaw_deg (> 0 = right) and pitch_deg (> 0 = up) itself and returns non-zero,
++ * or returns 0 when it cannot now (a menu, a cutscene) and the motion then
++ * moves the right stick as without a hook. Called from the pad poll, on the
++ * thread reading the pad, for each poll with mouse motion. NULL removes it. */
++void cellPad_set_look_hook(int (*look)(double yaw_deg, double pitch_deg));
++
++/* Menu query: non-zero while the title shows a menu. Return and Enter then
++ * press CROSS and Escape CIRCLE instead of START, and the cursor is not
++ * captured. NULL removes it. */
++void cellPad_set_menu_query(int (*in_menu)(void));
 +
  #ifdef __cplusplus
  }
@@ -7404,10 +7540,10 @@ index 0000000..4eef8a5
 +}
 diff --git a/libs/input/tests/test_pad_keymap.c b/libs/input/tests/test_pad_keymap.c
 new file mode 100644
-index 0000000..2754b62
+index 0000000..196e81d
 --- /dev/null
 +++ b/libs/input/tests/test_pad_keymap.c
-@@ -0,0 +1,303 @@
+@@ -0,0 +1,306 @@
 +/* cellPad's keyboard/mouse pad: the window's ps3_host_input block -> port 0
 + * through the built-in FPS layout or PS3_INPUT_MAP; the mouse camera on the
 + * right stick; wheel notches as presses; what the game tells the window
@@ -7430,6 +7566,9 @@ index 0000000..2754b62
 +void spu_coh_notify_write(uint32_t a) { (void)a; }
 +void spu_lockline_lock(void) {}
 +void spu_lockline_unlock(void) {}
++void ppu_bctrl_ring_dump_all(const char* t) { (void)t; }
++void ppu_dump_inputsys(const char* t) { (void)t; }
++void ppu_statescan_diff(uint32_t a, uint32_t b, const char* t) { (void)a; (void)b; (void)t; }
 +
 +/* The window's block: the shared one, as the window host hands it over. */
 +static ps3_host_input s_win;
@@ -7709,6 +7848,215 @@ index 0000000..2754b62
 +    test_input_mode_and_merge();
 +    test_attach();
 +    printf("test_pad_keymap: ok\n");
++    return 0;
++}
+diff --git a/libs/input/tests/test_pad_mouse_look.c b/libs/input/tests/test_pad_mouse_look.c
+new file mode 100644
+index 0000000..a4df09f
+--- /dev/null
++++ b/libs/input/tests/test_pad_mouse_look.c
+@@ -0,0 +1,203 @@
++/* cellPad's mouse look and menu hooks: motion handed to the port's look hook
++ * in degrees (PS3_MOUSE_LOOK_DEG, PS3_MOUSE_SENS, invert), the stick when the
++ * hook declines or is off, Return/Escape as CROSS/CIRCLE while the menu query
++ * says a menu is up (a key keeps the meaning it went down with), no capture
++ * in menus, and PAD_MOUSE_SCRIPT's motion adding up to what it asks.
++ *
++ *   clang -std=gnu17 -I include $(sdl2-config --cflags) -I "$(sdl2-config --prefix)/include" \
++ *         libs/input/tests/test_pad_mouse_look.c $(sdl2-config --libs) -o /tmp/test_pad_mouse_look && /tmp/test_pad_mouse_look
++ */
++#include "../cellPad.c"
++#include <assert.h>
++#include <unistd.h>
++uint8_t* vm_base;
++uint32_t ppu_vm_size;
++int g_resv_store_active;
++uint32_t g_ww_lo, g_ww_hi;
++void ppu_resv_break_store(uint64_t ea) { (void)ea; }
++void ps3_ww_report_inline(uint32_t a, uint64_t v, int w) { (void)a; (void)v; (void)w; }
++int spu_coh_is_reserved(uint32_t a) { (void)a; return 0; }
++u32 cellGcm_flip_request_count(void) { return 0; }
++void spu_coh_notify_write(uint32_t a) { (void)a; }
++void spu_lockline_lock(void) {}
++void spu_lockline_unlock(void) {}
++void ppu_bctrl_ring_dump_all(const char* t) { (void)t; }
++void ppu_dump_inputsys(const char* t) { (void)t; }
++void ppu_statescan_diff(uint32_t a, uint32_t b, const char* t) { (void)a; (void)b; (void)t; }
++
++static ps3_host_input s_win;
++
++static int s_take, s_calls;
++static double s_yaw, s_pitch;
++static int fake_look(double yaw, double pitch)
++{
++    s_calls++;
++    s_yaw += yaw;
++    s_pitch += pitch;
++    return s_take;
++}
++static int s_menu;
++static int fake_menu(void) { return s_menu; }
++
++static int near(double a, double b) { return fabs(a - b) < 1e-9; }
++
++static void reset(void)
++{
++    s_mouse_on = -1;
++    s_input_mode = -1;
++    s_calls = 0;
++    s_yaw = s_pitch = 0;
++}
++
++static void move(int dx_pt, int dy_pt)
++{
++    atomic_store(&s_win.mouse_dx, dx_pt * 16);
++    atomic_store(&s_win.mouse_dy, dy_pt * 16);
++    pad_poll_keys(0);
++}
++
++static void settle(void)
++{
++    for (int i = 0; i < 30; i++) { usleep(5 * 1000); pad_poll_keys(0); }
++}
++
++static void test_look_degrees(void)
++{
++    cellPad_set_look_hook(fake_look);
++    s_take = 1;
++    reset();
++    move(100, -50);                     /* right and up, 0.12 degrees a point */
++    assert(s_calls == 1 && near(s_yaw, 12.0) && near(s_pitch, 6.0));
++    assert(s_host_state[0].analog_rx == 128 && s_host_state[0].analog_ry == 128);   /* the stick stays put */
++    pad_poll_keys(0);                   /* no motion: not asked */
++    assert(s_calls == 1);
++
++    setenv("PS3_MOUSE_SENS", "2", 1);   /* sensitivity and the degree knob multiply */
++    setenv("PS3_MOUSE_LOOK_DEG", "0.05", 1);
++    reset();
++    move(-30, 10);
++    assert(near(s_yaw, -3.0) && near(s_pitch, -1.0));
++    unsetenv("PS3_MOUSE_SENS");
++    unsetenv("PS3_MOUSE_LOOK_DEG");
++
++    setenv("PS3_MOUSE_INVERT_X", "1", 1);
++    setenv("PS3_MOUSE_INVERT_Y", "1", 1);
++    reset();
++    move(10, 10);
++    assert(near(s_yaw, -1.2) && near(s_pitch, 1.2));
++    unsetenv("PS3_MOUSE_INVERT_X");
++    unsetenv("PS3_MOUSE_INVERT_Y");
++    reset();
++}
++
++static void test_look_fallback(void)
++{
++    cellPad_set_look_hook(fake_look);
++    s_take = 0;                         /* declined (a menu, a cutscene): the stick */
++    reset();
++    usleep(16 * 1000);
++    move(10, 0);
++    assert(s_calls == 1 && s_host_state[0].analog_rx > 128 + 30);
++    settle();
++
++    s_take = 1;                         /* PS3_MOUSE_LOOK=0: never asked */
++    setenv("PS3_MOUSE_LOOK", "0", 1);
++    reset();
++    usleep(16 * 1000);
++    move(10, 0);
++    assert(s_calls == 0 && s_host_state[0].analog_rx > 128 + 30);
++    unsetenv("PS3_MOUSE_LOOK");
++    settle();
++
++    setenv("PS3_INPUT_MODE", "controller", 1);   /* the mouse is not the game's */
++    reset();
++    move(10, 0);
++    assert(s_calls == 0 && s_host_state[0].analog_rx == 128);
++    unsetenv("PS3_INPUT_MODE");
++
++    cellPad_set_look_hook(NULL);        /* no hook: the stick */
++    reset();
++    usleep(16 * 1000);
++    move(10, 0);
++    assert(s_host_state[0].analog_rx > 128 + 30);
++    settle();
++    reset();
++}
++
++static void keys_only(const unsigned* vks, int n)
++{
++    for (int i = 0; i < 4; i++) atomic_store(&s_win.keys[i], 0);
++    for (int i = 0; i < n; i++) ps3_host_input_key(&s_win, vks[i], 1);
++    pad_poll_keys(0);
++}
++
++static void test_menu_keys(void)
++{
++    const unsigned ret = 0x24, esc = 0x35, p = 0x23;
++    reset();
++    cellPad_set_menu_query(fake_menu);
++    s_menu = 0;
++    keys_only(&ret, 1); assert(s_host_state[0].buttons == CELL_PAD_CTRL_START);
++    keys_only(NULL, 0);
++    s_menu = 1;
++    keys_only(&ret, 1); assert(s_host_state[0].buttons == CELL_PAD_CTRL_CROSS);
++    keys_only(NULL, 0);
++    keys_only(&esc, 1); assert(s_host_state[0].buttons == CELL_PAD_CTRL_CIRCLE);
++    keys_only(NULL, 0);
++    keys_only(&p, 1);   assert(s_host_state[0].buttons == CELL_PAD_CTRL_START);   /* P is not a menu key */
++    unsigned both[2] = { esc, p };      /* another START key held: START stays */
++    keys_only(both, 2); assert(s_host_state[0].buttons == (CELL_PAD_CTRL_START | CELL_PAD_CTRL_CIRCLE));
++    keys_only(NULL, 0);
++
++    /* Escape pauses the game; the pause menu comes up while it is held: it
++     * stays START until let go, then means back. */
++    s_menu = 0;
++    keys_only(&esc, 1); assert(s_host_state[0].buttons == CELL_PAD_CTRL_START);
++    s_menu = 1;
++    keys_only(&esc, 1); assert(s_host_state[0].buttons == CELL_PAD_CTRL_START);
++    keys_only(NULL, 0); assert(s_host_state[0].buttons == 0);
++    keys_only(&esc, 1); assert(s_host_state[0].buttons == CELL_PAD_CTRL_CIRCLE);
++    keys_only(NULL, 0);
++
++    /* The cursor is let go in menus, captured again in the game. */
++    assert(atomic_load(&s_win.game_flags) == (PS3_HOST_INPUT_ACTIVE | PS3_HOST_INPUT_MOUSE_CAMERA));
++    s_menu = 0;
++    keys_only(NULL, 0);
++    assert(atomic_load(&s_win.game_flags) ==
++           (PS3_HOST_INPUT_ACTIVE | PS3_HOST_INPUT_MOUSE_CAMERA | PS3_HOST_INPUT_CAPTURE));
++    cellPad_set_menu_query(NULL);
++    s_menu = 1;
++    keys_only(&ret, 1); assert(s_host_state[0].buttons == CELL_PAD_CTRL_START);
++    keys_only(NULL, 0);
++}
++
++static void test_mouse_script(void)
++{
++    /* Parsed on the first poll: 300 points right over 50 ms from now, then
++     * 120 up over 1 ms; all of it reaches the hook, in parts. */
++    setenv("PAD_MOUSE_SCRIPT", "0:300:0:50, 0.03:0:-120:1", 1);
++    cellPad_set_look_hook(fake_look);
++    s_take = 1;
++    reset();
++    for (int i = 0; i < 40; i++) { usleep(5 * 1000); pad_poll_keys(0); }
++    assert(s_calls > 2);
++    assert(near(s_yaw, 300 * 0.12) && near(s_pitch, 120 * 0.12));
++    unsetenv("PAD_MOUSE_SCRIPT");
++    cellPad_set_look_hook(NULL);
++}
++
++int main(void)
++{
++    unsetenv("PS3_MOUSE");
++    unsetenv("PS3_MOUSE_CAPTURE");
++    unsetenv("PS3_INPUT_MODE");
++    unsetenv("PS3_INPUT_MAP");
++    unsetenv("PS3_MOUSE_SENS");
++    ps3_pad_host_input_attach(&s_win);
++    test_look_degrees();
++    test_look_fallback();
++    test_menu_keys();
++    test_mouse_script();
++    printf("test_pad_mouse_look: ok\n");
 +    return 0;
 +}
 diff --git a/libs/input/tests/test_pad_rumble.c b/libs/input/tests/test_pad_rumble.c

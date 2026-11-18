@@ -261,6 +261,12 @@ sendo trabalhado.
   cair de ~21 para ~17 ms por quadro: o log da leitura-sombra é pré-filtrado,
   sequências de palavras de estado vão ao motor numa chamada só, memos de
   programa maiores, faixas de índice direto dos índices do jogo).
+- [x] Mira com o mouse (2026-11-17): o mouse gira a visão do personagem em
+  graus (`port/r3_look.cpp`), não pelo analógico direito que o jogo limita
+  a ~206 graus/s; escala com o zoom ao mirar; menus, cinemáticas e mortes
+  voltam ao analógico. Enter/Esc confirmam e voltam nos menus, e o cursor
+  fica livre neles. Opções > Controles (velocidade da câmera, inverter)
+  ainda não são seguidas.
 - [x] A thread do RSX abaixo de 16 ms por quadro (2026-11-17): ~13,6-14 ms
   na luta em Haven (eram ~16 na mesma árvore): kernels de leitura de vértice
   por formato, deduplicação por tabela direta, listas de índice escritas só

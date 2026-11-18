@@ -46,6 +46,7 @@ export interface Settings {
   mouseInvertX: boolean;
   mouseDeadzone: number;
   mouseCapture: boolean;
+  controllerPlayer2: boolean;
   rumble: boolean;
   rumbleStrength: number;
   adaptiveTriggers: boolean;
@@ -504,6 +505,7 @@ function bindSettings() {
   bindCheck("mouse-invert", "mouseInvertY");
   bindCheck("mouse-invert-x", "mouseInvertX");
   bindCheck("mouse-capture", "mouseCapture");
+  bindCheck("controller-p2", "controllerPlayer2");
   bindCheck("rumble-on", "rumble");
   bindCheck("adaptive-on", "adaptiveTriggers");
   bindSelect("pad-light", "padLight");
@@ -652,6 +654,7 @@ const DEFAULTS: Partial<Settings> = {
   mouseInvertX: false,
   mouseDeadzone: 30,
   mouseCapture: true,
+  controllerPlayer2: false,
   rumble: true,
   rumbleStrength: 100,
   adaptiveTriggers: true,

@@ -253,6 +253,15 @@ worked on.
   deaths fall back to the stick. Enter/Esc confirm and go back in menus,
   and the cursor is free there. Options > Controls (camera speed, invert)
   are not followed yet.
+- [x] Local split-screen co-op (2026-11-17): START on a second controller
+  ("P2 Join") opens the user picker (`cellUserInfoSelectUser_ListType`,
+  now implemented); the console has a second account, "Player 2"
+  (`PS3_USERS`), whose profile and saves live in `home/00000002`. Campaign >
+  Offline: Cooperative plays in a horizontal split at a steady 30 fps (RSX
+  ~18 ms a frame against ~14 single-player). The launcher's "Controller is
+  player 2" (`PS3_PAD_FIRST_PORT=1`) keeps keyboard and mouse as player 1.
+  Open: "P2 Join" only appears if player 1 presses START a few seconds
+  after "Press START" shows; garbled textures were seen once in four runs.
 - [x] The RSX thread under 16 ms a frame (2026-11-17): ~13.6-14 ms in the
   Haven fight (it was ~16 on the same tree): per-format vertex decode
   kernels, deduplication through a direct table, index lists written only

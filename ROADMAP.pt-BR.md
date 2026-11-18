@@ -267,6 +267,16 @@ sendo trabalhado.
   voltam ao analógico. Enter/Esc confirmam e voltam nos menus, e o cursor
   fica livre neles. Opções > Controles (velocidade da câmera, inverter)
   ainda não são seguidas.
+- [x] Co-op local em tela dividida (2026-11-17): START num segundo controle
+  ("P2 Join") abre a escolha de usuário (`cellUserInfoSelectUser_ListType`,
+  agora implementada); o console tem uma segunda conta, "Player 2"
+  (`PS3_USERS`), com perfil e saves em `home/00000002`. Campanha > Offline:
+  Cooperativo roda em tela dividida na horizontal a 30 fps estáveis (RSX
+  ~18 ms por quadro contra ~14 com um jogador). O "Controle é o jogador 2"
+  do launcher (`PS3_PAD_FIRST_PORT=1`) deixa teclado e mouse como jogador 1.
+  Em aberto: o "P2 Join" só aparece se o jogador 1 apertar START alguns
+  segundos depois de "Press START" surgir; texturas embaralhadas apareceram
+  uma vez em quatro testes.
 - [x] A thread do RSX abaixo de 16 ms por quadro (2026-11-17): ~13,6-14 ms
   na luta em Haven (eram ~16 na mesma árvore): kernels de leitura de vértice
   por formato, deduplicação por tabela direta, listas de índice escritas só

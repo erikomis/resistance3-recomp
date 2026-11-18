@@ -756,6 +756,16 @@ int main(int argc, char** argv)
 #ifndef _WIN32
     setenv("PS3_PAD_LIGHT", "ff5a00", 0);
 #endif
+    /* Split-screen co-op: START on a second controller ("P2 Join") opens
+     * the user selection overlay (cellUserInfoSelectUser_ListType) for the
+     * second player's account, and the game refuses the account player 1
+     * is logged in with. The console needs a second user to pick: player 2's
+     * profile then lives in home/00000002. PS3_USERS overrides the list. */
+#ifdef _WIN32
+    if (!getenv("PS3_USERS")) _putenv_s("PS3_USERS", "User,Player 2");
+#else
+    setenv("PS3_USERS", "User,Player 2", 0);
+#endif
     /* The RSX engine's texture cache: Haven's streets use more than the
      * toolkit's default 1024 textures at once, so it evicted and re-uploaded
      * ~9,500 of them every 120 frames (~500 MB, 100-240 ms of uploads in a

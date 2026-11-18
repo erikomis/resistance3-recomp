@@ -3761,10 +3761,10 @@ index 76c5505..6cdac92 100644
  /* Constants */
  #define CELL_GEM_MAX_NUM   4
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
-index 7fa8cab..c784278 100644
+index 7fa8cab..63186dd 100644
 --- a/libs/input/cellPad.c
 +++ b/libs/input/cellPad.c
-@@ -4,10 +4,45 @@
+@@ -4,10 +4,53 @@
   * Reads real gamepad input from the host and translates to PS3 pad format.
   *
   * Backend selection:
@@ -3793,7 +3793,15 @@ index 7fa8cab..c784278 100644
 + *                               port has a look hook (cellPad_set_look_hook)
 + *   PS3_MOUSE_LOOK_DEG=<f>      the look hook's degrees per point at SENS 1 (0.12)
 + *   PAD_MOUSE_SCRIPT=<sec>:<dx>:<dy>[:<ms>],...   scripted mouse motion (tests)
++ *   KEY_SCRIPT=<sec>:<key>[+<key>...][:<ms>],...  scripted keys and mouse
++ *                               buttons, held in the window's input block (tests)
++ *   PAD2_SCRIPT, PAD2_STICK, PAD2_FILE, PAD2_CONNECT (PAD3_*, PAD4_*): a
++ *                               virtual pad on port 1 (2, 3) for tests, see
++ *                               "Virtual pads" below
 + *   PS3_PAD_SDL=0               ignore physical controllers
++ *   PS3_PAD_FIRST_PORT=<0-3>    the first port a controller takes (0); 1 leaves
++ *                               port 0 to the keyboard and mouse, so a
++ *                               controller is the second player
 + *   PS3_RUMBLE=0, PS3_RUMBLE_STRENGTH=<0-200>, PS3_RUMBLE_LOG=1   vibration
 + *   PS3_PAD_ADAPTIVE=0, PS3_PAD_FIRE_AT=<10-90>   DualSense adaptive triggers
 + *   PS3_PAD_LIGHT=<RRGGBB>|off, PS3_PAD_LIGHT_HIT=0   DualSense light bar
@@ -3811,7 +3819,7 @@ index 7fa8cab..c784278 100644
   */
  
  #include <time.h>
-@@ -19,6 +54,8 @@
+@@ -19,6 +62,8 @@
  #include "../../runtime/platform/win32_compat.h"   /* GetTickCount64 on POSIX */
  #include "../../runtime/ppu/ppu_memory.h"   /* GUEST_PTR, vm_write*: guest EA -> host */
  #include "ps3emu/log_first.h"
@@ -3820,7 +3828,7 @@ index 7fa8cab..c784278 100644
  
  /* PAD_CLOCK=flips: PAD_SCRIPT and PAD_STICK times count guest flips instead of
   * wall-clock seconds. A loaded machine runs a title at a third of its usual
-@@ -53,10 +90,24 @@ static double pad_clock(unsigned long long t0_ms)
+@@ -53,10 +98,24 @@ static double pad_clock(unsigned long long t0_ms)
      #define WIN32_LEAN_AND_MEAN
    #endif
    #include <windows.h>
@@ -3846,7 +3854,7 @@ index 7fa8cab..c784278 100644
  #if PAD_BACKEND_SDL2
    #include <SDL2/SDL.h>
  #endif
-@@ -96,11 +147,121 @@ static PadHostState  s_host_state[PAD_MAX_HOST_PORTS];
+@@ -96,11 +155,121 @@ static PadHostState  s_host_state[PAD_MAX_HOST_PORTS];
  /* Per-port "a report has arrived since your last read" flag; see cellPadGetData. */
  static int s_data_fresh[PAD_MAX_HOST_PORTS];
  
@@ -3968,7 +3976,7 @@ index 7fa8cab..c784278 100644
  /* ---------------------------------------------------------------------------
   * Rumble (cellPadSetActDirect)
   *
-@@ -113,6 +274,12 @@ static int s_sdl_inited = 0;
+@@ -113,6 +282,12 @@ static int s_sdl_inited = 0;
   * PAD_RUMBLE_HOLD_MS. Large -> the host's low-frequency motor, small -> the
   * high-frequency one, which is how DualShock 4, DualSense and Xbox pads are
   * laid out too.
@@ -3981,7 +3989,7 @@ index 7fa8cab..c784278 100644
   * -------------------------------------------------------------------------*/
  
  #define PAD_RUMBLE_HOLD_MS     1000   /* one SDL request lasts this long ... */
-@@ -121,16 +288,43 @@ static int s_sdl_inited = 0;
+@@ -121,16 +296,43 @@ static int s_sdl_inited = 0;
  typedef struct {
      u16 lo, hi;                 /* what the host motors were last asked for */
      unsigned long long sent_ms; /* when (pad_now_ms), 0 = nothing to renew */
@@ -4030,7 +4038,7 @@ index 7fa8cab..c784278 100644
  }
  
  /* ---------------------------------------------------------------------------
-@@ -143,6 +337,39 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
+@@ -143,6 +345,39 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
  #define PAD_STICK_DEADZONE  7849
  #define PAD_TRIGGER_THRESHOLD 30
  
@@ -4070,7 +4078,7 @@ index 7fa8cab..c784278 100644
  static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
  {
      float normalized;
-@@ -240,7 +467,8 @@ static void pad_poll_xinput(void)
+@@ -240,7 +475,8 @@ static void pad_poll_xinput(void)
          XINPUT_STATE state;
          memset(&state, 0, sizeof(state));
  
@@ -4080,7 +4088,7 @@ index 7fa8cab..c784278 100644
          if (result != ERROR_SUCCESS) {
              s_host_state[i].connected = 0;
              continue;
-@@ -299,7 +527,8 @@ static void pad_poll_xinput(void)
+@@ -299,7 +535,8 @@ static void pad_poll_xinput(void)
  
  static void pad_init_backend(void)
  {
@@ -4090,7 +4098,7 @@ index 7fa8cab..c784278 100644
  }
  
  static void pad_shutdown_backend(void)
-@@ -333,79 +562,634 @@ static u8 pad_sdl_trigger_to_u8(int raw)
+@@ -333,79 +570,660 @@ static u8 pad_sdl_trigger_to_u8(int raw)
      return (u8)val;
  }
  
@@ -4513,7 +4521,7 @@ index 7fa8cab..c784278 100644
 +        cellAudio_host_muted())
 +        pad_mute_light(gc, 1);
 +}
- 
++
 +/* Gyro aim: what the controller's turn this poll adds to the right stick,
 + * in SDL axis units. */
 +static void pad_extras_gyro(int p, SDL_GameController* gc, int lt, int* rx, int* ry)
@@ -4542,7 +4550,7 @@ index 7fa8cab..c784278 100644
 +    *rx = nx < -32768 ? -32768 : nx > 32767 ? 32767 : nx;
 +    *ry = ny < -32768 ? -32768 : ny > 32767 ? 32767 : ny;
 +}
-+
+ 
 +/* ---- hot-plug ------------------------------------------------------------
 + * A DualSense over Bluetooth drops off when it is switched off or idles, and
 + * comes back as a NEW SDL device (a new instance id, maybe another index).
@@ -4588,6 +4596,31 @@ index 7fa8cab..c784278 100644
 +    s_host_state[p].connected = 0;
 +}
 +
++/* PS3_PAD_FIRST_PORT=<0-3>: the lowest port a controller is given (0). With
++ * 1 the keyboard and mouse keep port 0 to themselves (the virtual pad) and
++ * the first controller is the second player -- local multiplayer with one
++ * controller. */
++static int s_first_port = -1;
++static int pad_first_port_from(const char* e)
++{
++    if (!e || !*e) return 0;
++    const int v = atoi(e);
++    if (v < 0 || v >= PAD_MAX_HOST_PORTS) {
++        fprintf(stderr, "[cellPad] PS3_PAD_FIRST_PORT=%s: expected 0-%d; 0\n", e, PAD_MAX_HOST_PORTS - 1);
++        return 0;
++    }
++    return v;
++}
++static int pad_first_port(void)
++{
++    int v = s_first_port;
++    if (v < 0) {
++        v = s_first_port = pad_first_port_from(getenv("PS3_PAD_FIRST_PORT"));
++        if (v) fprintf(stderr, "[cellPad] controllers start at port %d (PS3_PAD_FIRST_PORT)\n", v);
++    }
++    return v;
++}
++
 +/* Open every game controller SDL lists that no port has yet. */
 +static void pad_sdl_scan(void)
 +{
@@ -4598,9 +4631,10 @@ index 7fa8cab..c784278 100644
 +        if (id < 0 || pad_sdl_port_of(id) >= 0) continue;
 +        const SDL_JoystickGUID guid = SDL_JoystickGetDeviceGUID(idx);
 +        int port = -1, back = 0;
-+        for (int p = 0; p < PAD_MAX_HOST_PORTS && port < 0; p++)
++        const int first = pad_first_port();
++        for (int p = first; p < PAD_MAX_HOST_PORTS && port < 0; p++)
 +            if (!s_sdl_controllers[p] && s_sdl_had[p] && !memcmp(&s_sdl_last_guid[p], &guid, sizeof guid)) { port = p; back = 1; }
-+        for (int p = 0; p < PAD_MAX_HOST_PORTS && port < 0; p++)
++        for (int p = first; p < PAD_MAX_HOST_PORTS && port < 0; p++)
 +            if (!s_sdl_controllers[p]) port = p;
 +        if (port < 0) return;                 /* every port has a controller */
 +        SDL_GameController* gc = SDL_GameControllerOpen(idx);
@@ -4643,7 +4677,7 @@ index 7fa8cab..c784278 100644
 +            changed = 1;
 +        }
 +    int free_port = 0;
-+    for (int p = 0; p < PAD_MAX_HOST_PORTS; p++) if (!s_sdl_controllers[p]) free_port = 1;
++    for (int p = pad_first_port(); p < PAD_MAX_HOST_PORTS; p++) if (!s_sdl_controllers[p]) free_port = 1;
 +    if (!free_port) return;
 +    const unsigned long long now = pad_now_ms();
 +    if (!changed && s_sdl_scan_ms && now - s_sdl_scan_ms < PAD_SDL_RESCAN_MS) return;
@@ -4767,7 +4801,7 @@ index 7fa8cab..c784278 100644
  
          /* Pressure: SDL has digital buttons, so 0 or 255 */
          s_host_state[i].press_up       = (btns & CELL_PAD_CTRL_UP)       ? 255 : 0;
-@@ -419,36 +1203,57 @@ static void pad_poll_sdl2(void)
+@@ -419,36 +1237,57 @@ static void pad_poll_sdl2(void)
          s_host_state[i].press_l1       = (btns & CELL_PAD_CTRL_L1)       ? 255 : 0;
          s_host_state[i].press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
      }
@@ -4838,7 +4872,7 @@ index 7fa8cab..c784278 100644
      memset(s_rumble, 0, sizeof s_rumble);
  }
  
-@@ -485,6 +1290,354 @@ static unsigned long long pad_now_ms(void)
+@@ -485,6 +1324,626 @@ static unsigned long long pad_now_ms(void)
  #endif
  }
  
@@ -5117,6 +5151,106 @@ index 7fa8cab..c784278 100644
 +    }
 +}
 +
++/* KEY_SCRIPT="<sec>:<key>[+<key>...][:<ms>],..." holds keys (names as in
++ * PS3_INPUT_MAP: W, Space, Return, Escape, Left, 0x31 ...) and mouse buttons
++ * (MouseLeft, MouseRight, MouseMiddle, Mouse4 ...) down for <ms> (default
++ * 200) from <sec> on (PAD_CLOCK as PAD_SCRIPT), in the window's input block,
++ * as the window would: everything after it -- the input map, the menu query,
++ * port 0 -- is the real keyboard path. Input simulation for tests. A key the
++ * script holds is set again on every poll (a focus change in the window
++ * releases everything) and let go when its time is up; keys it never held
++ * are left to the window. */
++#define PAD_KSCRIPT_MAX 256
++typedef struct { double t, ms; uint32_t keys[4]; uint32_t mouse; } PadKeyEvent;
++static PadKeyEvent s_kscript[PAD_KSCRIPT_MAX];
++static int s_kscript_n = -1;                 /* -1 = not read yet */
++static unsigned long long s_kscript_t0;
++static uint32_t s_kscript_held[4], s_kscript_held_mouse;
++
++/* One key or mouse button name: 1 and its bit set in keys[] or mouse, else 0. */
++static int pad_kscript_name(const char* tok, size_t n, uint32_t keys[4], uint32_t* mouse)
++{
++    char name[32];
++    if (!n || n >= sizeof name) return 0;
++    memcpy(name, tok, n); name[n] = 0;
++    pim_lower(name);
++    if (!strncmp(name, "mouse", 5) && name[5]) {
++        const char* b = name + 5;
++        if (*b == '_' || *b == ':') b++;
++        int bit = pim_lookup(pim_mouse_buttons, PIM_COUNT(pim_mouse_buttons), b);
++        if (bit < 0 && b[0] >= '4' && b[0] <= '8' && !b[1]) bit = 1 << (b[0] - '1');   /* Mouse4 = button4 */
++        if (bit > 0) { *mouse |= (uint32_t)bit; return 1; }
++    }
++    const int vk = pim_parse_key_name(name);
++    if (vk < 0) return 0;
++    pim_key_set(keys, (unsigned)vk);
++    return 1;
++}
++
++static int pad_kscript_parse(const char* p, PadKeyEvent* ev, int max)
++{
++    int n = 0;
++    while (p && *p && n < max) {
++        char* q;
++        PadKeyEvent e; memset(&e, 0, sizeof e);
++        e.t = strtod(p, &q);
++        if (q == p || *q != ':') break;
++        p = q + 1;
++        int ok = 1;
++        for (;;) {                                   /* key[+key...] */
++            size_t len = strcspn(p, "+:, ");
++            if (!pad_kscript_name(p, len, e.keys, &e.mouse)) {
++                fprintf(stderr, "[cellPad] KEY_SCRIPT: unknown key '%.*s' (event ignored)\n", (int)len, p);
++                ok = 0;
++            }
++            p += len;
++            if (*p != '+') break;
++            p++;
++        }
++        e.ms = 200;
++        if (*p == ':') { e.ms = strtod(p + 1, &q); p = q; }
++        if (!(e.ms >= 1)) e.ms = 1;
++        if (ok) ev[n++] = e;
++        while (*p && *p != ',') p++;                 /* anything else up to the next event */
++        while (*p == ',' || *p == ' ') p++;
++    }
++    return n;
++}
++
++static void pad_key_script(ps3_host_input* in)
++{
++    int n = s_kscript_n;
++    if (n < 0) {
++        const char* e = getenv("KEY_SCRIPT");
++        n = s_kscript_n = (e && *e) ? pad_kscript_parse(e, s_kscript, PAD_KSCRIPT_MAX) : 0;
++        s_kscript_t0 = GetTickCount64();
++        memset(s_kscript_held, 0, sizeof s_kscript_held);
++        s_kscript_held_mouse = 0;
++        if (n) { printf("[cellPad] KEY_SCRIPT: %d event(s)\n", n); fflush(stdout); }
++    }
++    if (!n) return;
++    const double now = pad_clock(s_kscript_t0);
++    uint32_t want[4] = { 0, 0, 0, 0 }, want_mouse = 0;
++    for (int i = 0; i < n; i++) {
++        const PadKeyEvent* e = &s_kscript[i];
++        if (now < e->t || now >= e->t + e->ms / 1000.0) continue;
++        for (int w = 0; w < 4; w++) want[w] |= e->keys[w];
++        want_mouse |= e->mouse;
++    }
++    for (int w = 0; w < 4; w++) {
++        const uint32_t up = s_kscript_held[w] & ~want[w];
++        if (up) atomic_fetch_and(&in->keys[w], ~up);
++        if (want[w]) atomic_fetch_or(&in->keys[w], want[w]);
++        static int said;
++        if ((want[w] & ~s_kscript_held[w]) && PS3_LOG_FIRST(said, 200)) { printf("[cellPad] KEY_SCRIPT t=%.2fs keys[%d] |= 0x%08X\n", now, w, want[w] & ~s_kscript_held[w]); fflush(stdout); }
++        s_kscript_held[w] = want[w];
++    }
++    const uint32_t mup = s_kscript_held_mouse & ~want_mouse;
++    if (mup) atomic_fetch_and(&in->mouse_buttons, ~mup);
++    if (want_mouse) atomic_fetch_or(&in->mouse_buttons, want_mouse);
++    s_kscript_held_mouse = want_mouse;
++}
++
 +/* Port 0 from the keyboard and mouse. With a real pad on port 0 (`merge`:
 + * the SDL poll filled it), they add to it instead: buttons are OR-ed, and an
 + * axis the keys or mouse move wins over the pad's, so an idle paired
@@ -5124,6 +5258,7 @@ index 7fa8cab..c784278 100644
 +static void pad_poll_keys(int merge)
 +{
 +    ps3_host_input* in = ps3_pad_host_input();
++    pad_key_script(in);                     /* KEY_SCRIPT, as the window would */
 +    const PadInputMap* map = pad_map();
 +    const uint32_t flags = pad_mouse_flags();
 +    if (atomic_load(&in->game_flags) != flags) atomic_store(&in->game_flags, flags);
@@ -5190,10 +5325,181 @@ index 7fa8cab..c784278 100644
 +}
 +#endif /* !_WIN32 */
 +
++/* ---------------------------------------------------------------------------
++ * Virtual pads (tests)
++ *
++ * PAD<n>_SCRIPT, PAD<n>_STICK, PAD<n>_FILE and PAD<n>_CONNECT, n = 2..4,
++ * plug a scripted controller into port n-1 -- the second player without a
++ * second controller. Any of them makes the port read connected (from
++ * PAD<n>_CONNECT=<sec> on, default at once; a later time is a hot-plug the
++ * title sees as CELL_PAD_STATUS_ASSIGN_CHANGES). A real controller on the
++ * same port adds to it.
++ *
++ *   PAD2_SCRIPT="<sec>:<mask>[:<polls>],..."   as PAD_SCRIPT: the mask (CROSS
++ *                       0x4000, START 0x0008 ...) held for <polls> reads of
++ *                       the port (40) from <sec> on
++ *   PAD2_STICK="lx,ly,rx,ry[,from,until]"      as PAD_STICK
++ *   PAD2_FILE=<path>                           as PAD_FILE (a mask, or
++ *                       "S lx ly rx ry polls")
++ *
++ * Seconds count from the first cellPadGetData, or flips under PAD_CLOCK=flips.
++ * -------------------------------------------------------------------------*/
++#define PAD_VSCRIPT_MAX 256
++typedef struct {
++    int    on;
++    double connect_at;
++    int    n_ev;
++    struct { double t; unsigned mask; int polls, fired, held; } ev[PAD_VSCRIPT_MAX];
++    int    stick; unsigned char v[4]; double st_from, st_until;
++    char   path[512];
++    unsigned file_mask; int file_n;
++    unsigned char fstick[4]; int fstick_n;
++} PadVirtual;
++static PadVirtual s_virt[PAD_MAX_HOST_PORTS];
++static int s_virt_state = -1;                /* -1 not read, 0 none, 1 some */
++static unsigned long long s_virt_t0;         /* the first cellPadGetData */
++
++static int pad_vscript_parse(PadVirtual* v, const char* p)
++{
++    v->n_ev = 0;
++    while (p && *p && v->n_ev < PAD_VSCRIPT_MAX) {
++        char* q;
++        const double t = strtod(p, &q);
++        if (q == p || *q != ':') break;
++        const unsigned m = (unsigned)strtoul(q + 1, &q, 0);
++        int polls = 40;
++        if (*q == ':') { polls = (int)strtol(q + 1, &q, 0); if (polls < 1) polls = 1; }
++        v->ev[v->n_ev].t = t; v->ev[v->n_ev].mask = m; v->ev[v->n_ev].polls = polls;
++        v->ev[v->n_ev].fired = v->ev[v->n_ev].held = 0;
++        v->n_ev++;
++        p = q;
++        while (*p == ',' || *p == ' ') p++;
++    }
++    return v->n_ev;
++}
++
++static void pad_virtual_load(void)
++{
++    if (s_virt_state >= 0) return;
++    int any = 0;
++    memset(s_virt, 0, sizeof s_virt);
++    for (int port = 1; port < PAD_MAX_HOST_PORTS; port++) {
++        PadVirtual* v = &s_virt[port];
++        char name[32];
++        const char* e;
++        snprintf(name, sizeof name, "PAD%d_SCRIPT", port + 1);
++        if ((e = getenv(name)) && *e) { v->on = 1; pad_vscript_parse(v, e); }
++        snprintf(name, sizeof name, "PAD%d_STICK", port + 1);
++        if ((e = getenv(name)) && *e) {
++            int a = 128, b = 128, c = 128, d = 128;
++            v->st_from = 0; v->st_until = 1e30;
++            sscanf(e, "%d,%d,%d,%d,%lf,%lf", &a, &b, &c, &d, &v->st_from, &v->st_until);
++            v->v[0] = (unsigned char)a; v->v[1] = (unsigned char)b;
++            v->v[2] = (unsigned char)c; v->v[3] = (unsigned char)d;
++            v->on = v->stick = 1;
++        }
++        snprintf(name, sizeof name, "PAD%d_FILE", port + 1);
++        if ((e = getenv(name)) && *e) {
++            strncpy(v->path, e, sizeof v->path - 1);
++            v->on = 1;
++        }
++        snprintf(name, sizeof name, "PAD%d_CONNECT", port + 1);
++        if ((e = getenv(name)) && *e) { v->on = 1; v->connect_at = atof(e); }
++        if (v->on) {
++            any = 1;
++            printf("[cellPad] virtual pad on port %d: %d scripted press(es)%s%s, connected from %.1f s\n",
++                   port, v->n_ev, v->stick ? ", sticks" : "", v->path[0] ? ", file" : "", v->connect_at);
++            fflush(stdout);
++        }
++    }
++    s_virt_state = any;
++}
++
++static double pad_virtual_clock(void)
++{
++    return s_virt_t0 ? pad_clock(s_virt_t0) : -1.0;
++}
++
++/* After the backend poll: a virtual pad's port reads connected (neutral
++ * when no real controller is there). */
++static void pad_virtual_connect(void)
++{
++    pad_virtual_load();
++    if (!s_virt_state) return;
++    const double now = pad_virtual_clock();
++    for (int port = 1; port < PAD_MAX_HOST_PORTS; port++) {
++        const PadVirtual* v = &s_virt[port];
++        if (!v->on || s_host_state[port].connected) continue;
++        if (v->connect_at > 0 && now < v->connect_at) continue;
++        memset(&s_host_state[port], 0, sizeof s_host_state[port]);
++        s_host_state[port].analog_lx = s_host_state[port].analog_ly = 128;
++        s_host_state[port].analog_rx = s_host_state[port].analog_ry = 128;
++        s_host_state[port].connected = 1;
++    }
++}
++
++/* One cellPadGetData packet of port `port`: the scripted buttons OR-ed in,
++ * the scripted sticks over the real ones. */
++static void pad_virtual_packet(u32 port, CellPadData* data)
++{
++    if (port == 0 || port >= PAD_MAX_HOST_PORTS || !s_virt_state || !s_virt[port].on) return;
++    PadVirtual* v = &s_virt[port];
++    const double now = pad_virtual_clock();
++    unsigned mask = 0;
++    for (int i = 0; i < v->n_ev; i++) {
++        if (!v->ev[i].fired && now >= v->ev[i].t) {
++            v->ev[i].fired = 1; v->ev[i].held = v->ev[i].polls;
++            printf("[cellPad] PAD%u_SCRIPT t=%.1fs press 0x%04X\n", port + 1, v->ev[i].t, v->ev[i].mask);
++            fflush(stdout);
++        }
++        if (v->ev[i].held > 0) { v->ev[i].held--; mask |= v->ev[i].mask; }
++    }
++    if (v->path[0] && v->file_n <= 0) {
++        FILE* f = fopen(v->path, "rb");
++        if (f) {
++            char buf[64]; buf[0] = 0;
++            int took = 0;
++            if (fgets(buf, sizeof buf, f)) {
++                int lx, ly, rx, ry, sn;
++                if (buf[0] == 'S' && sscanf(buf + 1, "%d %d %d %d %d", &lx, &ly, &rx, &ry, &sn) == 5) {
++                    v->fstick[0] = (unsigned char)lx; v->fstick[1] = (unsigned char)ly;
++                    v->fstick[2] = (unsigned char)rx; v->fstick[3] = (unsigned char)ry;
++                    v->fstick_n = sn > 0 ? sn : 40;
++                    took = 1;
++                    printf("[cellPad] PAD%u_FILE sticks %d,%d,%d,%d for %d polls\n", port + 1, lx, ly, rx, ry, v->fstick_n);
++                } else {
++                    char* rest;
++                    const unsigned m = (unsigned)strtoul(buf, &rest, 0);
++                    const int n = (int)strtol(rest, 0, 0);
++                    if (m) {
++                        v->file_mask = m; v->file_n = n > 0 ? n : 40; took = 1;
++                        printf("[cellPad] PAD%u_FILE press 0x%04X\n", port + 1, m);
++                    }
++                }
++                fflush(stdout);
++            }
++            fclose(f);
++            if (took) { FILE* w = fopen(v->path, "wb"); if (w) fclose(w); }
++        }
++    }
++    if (v->file_n > 0) { v->file_n--; mask |= v->file_mask; }
++    data->button[CELL_PAD_BTN_OFFSET_DIGITAL1] |= (u16)(mask & 0xFF);
++    data->button[CELL_PAD_BTN_OFFSET_DIGITAL2] |= (u16)((mask >> 8) & 0xFF);
++    const unsigned char* st = NULL;
++    if (v->fstick_n > 0) { v->fstick_n--; st = v->fstick; }
++    else if (v->stick && now >= v->st_from && now < v->st_until) st = v->v;
++    if (st) {
++        data->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X]  = st[0];
++        data->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y]  = st[1];
++        data->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X] = st[2];
++        data->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y] = st[3];
++    }
++}
++
  static void pad_poll_backend(void)
  {
      /* Benign race: two threads may poll in the same tick. That costs one extra
-@@ -492,6 +1645,7 @@ static void pad_poll_backend(void)
+@@ -492,6 +1951,7 @@ static void pad_poll_backend(void)
      static unsigned long long s_last_ms = 0;
      unsigned long long now = pad_now_ms();
      if (s_last_ms && now - s_last_ms < PAD_POLL_INTERVAL_MS) return;
@@ -5201,7 +5507,7 @@ index 7fa8cab..c784278 100644
      s_last_ms = now;
      /* A real pad streams reports at roughly this rate whether or not anything
       * changed, and libpad buffers them; a fresh sweep is a fresh report for
-@@ -505,7 +1659,20 @@ static void pad_poll_backend(void)
+@@ -505,7 +1965,21 @@ static void pad_poll_backend(void)
  #endif
  #ifdef _WIN32
      if (!s_host_state[0].connected) pad_poll_keyboard();
@@ -5217,12 +5523,13 @@ index 7fa8cab..c784278 100644
 +     * are merged into it. */
 +    pad_poll_keys(s_host_state[0].connected);
  #endif
++    pad_virtual_connect();   /* PAD2_SCRIPT ...: after the backend, which clears empty ports */
 +    pad_track_assign();
 +    pad_unlock();
  }
  
  /* ---------------------------------------------------------------------------
-@@ -526,15 +1693,24 @@ s32 cellPadInit(u32 max_connect)
+@@ -526,15 +2000,24 @@ s32 cellPadInit(u32 max_connect)
      if (max_connect == 0 || max_connect > 127)
          return CELL_PAD_ERROR_INVALID_PARAMETER;
  
@@ -5247,7 +5554,7 @@ index 7fa8cab..c784278 100644
  
      return CELL_OK;
  }
-@@ -546,7 +1722,9 @@ s32 cellPadEnd(void)
+@@ -546,7 +2029,9 @@ s32 cellPadEnd(void)
      if (!s_pad_initialized)
          return CELL_PAD_ERROR_NOT_OPENED;
  
@@ -5257,7 +5564,15 @@ index 7fa8cab..c784278 100644
  
      s_pad_initialized = 0;
      s_max_connect = 0;
-@@ -716,9 +1894,29 @@ skip_inject: ;
+@@ -580,6 +2065,7 @@ s32 cellPadGetData(u32 port_no, CellPadData* data_guest)
+     CellPadData _d; CellPadData* data = &_d;
+     memset(data, 0, sizeof(CellPadData));
+ 
++    if (!s_virt_t0) s_virt_t0 = GetTickCount64();   /* the virtual pads' clock starts */
+     /* Poll fresh state */
+     pad_poll_backend();
+ 
+@@ -716,9 +2202,29 @@ skip_inject: ;
                    held[i]--;
                    data->button[CELL_PAD_BTN_OFFSET_DIGITAL1] |= (u16)(ev[i].mask & 0xFF);
                    data->button[CELL_PAD_BTN_OFFSET_DIGITAL2] |= (u16)((ev[i].mask >> 8) & 0xFF);
@@ -5289,7 +5604,7 @@ index 7fa8cab..c784278 100644
                }
            }
        } }
-@@ -735,6 +1933,7 @@ skip_inject: ;
+@@ -735,6 +2241,7 @@ skip_inject: ;
       *   echo 0x0040 4 > pad.txt  # DOWN for 4 polls (menus auto-repeat a
       *                            # long hold; the default is 40)
       */
@@ -5297,7 +5612,7 @@ index 7fa8cab..c784278 100644
      { static int s_pf = -1; static char pf_path[512];
        static unsigned held_mask = 0; static int held_n = 0;
        if (s_pf < 0) { const char* e = getenv("PAD_FILE");
-@@ -746,11 +1945,25 @@ skip_inject: ;
+@@ -746,11 +2253,25 @@ skip_inject: ;
                if (f) {
                    char buf[64]; buf[0] = 0;
                    if (fgets(buf, sizeof buf, f)) {
@@ -5328,8 +5643,12 @@ index 7fa8cab..c784278 100644
                    }
                    fclose(f);
                    if (held_n > 0) { FILE* w = fopen(pf_path, "wb"); if (w) fclose(w); }
-@@ -782,6 +1995,12 @@ skip_inject: ;
-       if (s_st && pad_clock(s_t0) >= s_from && pad_clock(s_t0) < s_until) { hs->analog_lx = s_v[0]; hs->analog_ly = s_v[1];
+@@ -779,9 +2300,15 @@ skip_inject: ;
+                  sscanf(e, "%d,%d,%d,%d,%lf,%lf", &a,&b,&c,&d,&s_from,&s_until);
+                  s_v[0]=(unsigned char)a; s_v[1]=(unsigned char)b;
+                  s_v[2]=(unsigned char)c; s_v[3]=(unsigned char)d; } }
+-      if (s_st && pad_clock(s_t0) >= s_from && pad_clock(s_t0) < s_until) { hs->analog_lx = s_v[0]; hs->analog_ly = s_v[1];
++      if (s_st && port_no == 0 && pad_clock(s_t0) >= s_from && pad_clock(s_t0) < s_until) { hs->analog_lx = s_v[0]; hs->analog_ly = s_v[1];
                    hs->analog_rx = s_v[2]; hs->analog_ry = s_v[3];
                    hs->connected = 1; }
 +      if (s_pf_stick_n > 0 && port_no == 0) {     /* PAD_FILE "S ..." */
@@ -5341,7 +5660,24 @@ index 7fa8cab..c784278 100644
        /* PAD_SWEEP=<seconds per step>: walk the sticks through a fixed set of
         * deflections instead of holding one. Guessing a single stick position and
         * re-running costs ~5 minutes a try; a sweep answers "can input move the
-@@ -896,6 +2115,21 @@ emit:
+@@ -790,7 +2317,7 @@ skip_inject: ;
+       { static int sw = -1; static clock_t t0 = 0;
+         if (sw < 0) { const char* e = getenv("PAD_SWEEP");
+                       sw = e ? atoi(e) : 0; if (sw < 0) sw = 0; }
+-        if (sw) {
++        if (sw && port_no == 0) {
+             static const unsigned char steps[9][4] = {
+                 {128,128,128,128},
+                 {128,  0,128,128}, {128,255,128,128},
+@@ -813,6 +2340,7 @@ skip_inject: ;
+     data->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y] = hs->analog_ry;
+     data->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X]  = hs->analog_lx;
+     data->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y]  = hs->analog_ly;
++    pad_virtual_packet(port_no, data);   /* PAD2_SCRIPT ...: before the pressure words */
+ 
+     /* Pressure-sensitive buttons (only meaningful if PRESS_ON) */
+     if (setting & CELL_PAD_SETTING_PRESS_ON) {
+@@ -896,6 +2424,21 @@ emit:
      }
      {
          unsigned int ea = (unsigned int)(uintptr_t)data_guest;
@@ -5363,7 +5699,7 @@ index 7fa8cab..c784278 100644
          vm_write32((unsigned long long)ea + 0, (unsigned int)data->len);   /* len (s32) */
          for (int _i = 0; _i < CELL_PAD_MAX_CODES; _i++)                    /* button[] u16 */
              vm_write16((unsigned long long)ea + 4 + (unsigned int)_i * 2, data->button[_i]);
-@@ -946,7 +2180,7 @@ s32 cellPadGetInfo(CellPadInfo2* info)
+@@ -946,7 +2489,7 @@ s32 cellPadGetInfo(CellPadInfo2* info)
                    (s_host_state[i].connected || i == 0));
          vm_write16(gaddr + 0x00C + i * 2, on ? 0x054C : 0);   /* vendor: Sony  */
          vm_write16(gaddr + 0x10A + i * 2, on ? 0x0268 : 0);   /* product: DS3  */
@@ -5372,7 +5708,7 @@ index 7fa8cab..c784278 100644
      }
      return CELL_OK;
  }
-@@ -973,7 +2207,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
+@@ -973,7 +2516,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
           * boot flows that block until a controller is connected can proceed even
           * with no physical device attached. */
          if (s_host_state[i].connected || i == 0) {
@@ -5381,7 +5717,7 @@ index 7fa8cab..c784278 100644
              info->port_setting[i]      = s_port_setting[i];
              info->device_capability[i] = CELL_PAD_CAPABILITY_PS3_CONFORMITY
                                         | CELL_PAD_CAPABILITY_PRESS_MODE
-@@ -983,7 +2217,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
+@@ -983,7 +2526,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
              info->device_type[i]       = CELL_PAD_DEV_TYPE_STANDARD;
              connected++;
          } else {
@@ -5390,7 +5726,7 @@ index 7fa8cab..c784278 100644
          }
      }
      info->now_connect = connected;
-@@ -1028,7 +2262,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
+@@ -1028,7 +2571,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
          /* Same virtual-pad-on-port-0 rule as cellPadGetInfo2, so both views of
           * the ports agree (a game that cross-checks them must see one truth). */
          if ((i < PAD_MAX_HOST_PORTS && s_host_state[i].connected) || i == 0) {
@@ -5399,7 +5735,7 @@ index 7fa8cab..c784278 100644
              info->port_setting[i]      = s_port_setting[i];
              info->device_capability[i] = CELL_PAD_CAPABILITY_PS3_CONFORMITY
                                         | CELL_PAD_CAPABILITY_PRESS_MODE
-@@ -1040,7 +2274,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
+@@ -1040,7 +2583,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
              info->pclass_profile[i]    = 0;
              connected++;
          } else {
@@ -5408,7 +5744,7 @@ index 7fa8cab..c784278 100644
          }
      }
      info->now_connect = connected;
-@@ -1104,6 +2338,39 @@ s32 cellPadSetPressMode(u32 port_no, u32 mode)
+@@ -1104,6 +2647,39 @@ s32 cellPadSetPressMode(u32 port_no, u32 mode)
      return CELL_OK;
  }
  
@@ -5448,7 +5784,7 @@ index 7fa8cab..c784278 100644
  s32 cellPadGetCapabilityInfo(u32 port_no, CellPadCapabilityInfo* info)
  {
      if (!s_pad_initialized)
-@@ -1136,29 +2403,43 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+@@ -1136,29 +2712,43 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
  
      param = GUEST_PTR(param, CellPadActParam*);
  
@@ -6893,10 +7229,10 @@ index 0000000..0b37b22
 +}
 diff --git a/libs/input/tests/test_pad_hotplug.c b/libs/input/tests/test_pad_hotplug.c
 new file mode 100644
-index 0000000..99fbc8b
+index 0000000..ff8b115
 --- /dev/null
 +++ b/libs/input/tests/test_pad_hotplug.c
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,308 @@
 +/* cellPad's SDL controller hot-plug: a controller switched off and on again
 + * (a DualSense over Bluetooth comes back with a new instance id) is opened
 + * again without a restart, into the port it had; a new one goes into a free
@@ -7177,6 +7513,31 @@ index 0000000..99fbc8b
 +
 +    assert(cellPadEnd() == CELL_OK);
 +    assert(a3->closed && b2->closed && c->closed);
++
++    /* PS3_PAD_FIRST_PORT=1: the keyboard and mouse keep port 0, controllers
++     * start at port 1 -- even one whose GUID last had port 0. */
++    for (int i = 0; i < s_nfp; i++) s_fp[i].present = 0;
++    setenv("PS3_PAD_FIRST_PORT", "1", 1);
++    s_first_port = -1;
++    FakePad* d = fake_new(20, 0xD8);
++    FakePad* a4 = fake_new(21, 0xA5);                       /* was on port 0 */
++    assert(cellPadInit(4) == CELL_OK);
++    assert(!s_sdl_controllers[0]);
++    assert(s_sdl_controllers[1] == (SDL_GameController*)d && s_sdl_controllers[2] == (SDL_GameController*)a4);
++    poll_once();
++    assert(info_status(0) == CELL_PAD_STATUS_CONNECTED);
++    assert(info_status(1) & CELL_PAD_STATUS_CONNECTED);
++    d->buttons = 1u << SDL_CONTROLLER_BUTTON_A;
++    assert(data_digital2(1) & CROSS_BIT);                   /* the controller is player 2 */
++    assert(!(data_digital2(0) & CROSS_BIT));
++    d->buttons = 0;
++    ps3_host_input_key(ps3_pad_host_input(), 0x31, 1);     /* Space: player 1's Cross */
++    assert(data_digital2(0) & CROSS_BIT);
++    assert(!(data_digital2(1) & CROSS_BIT));
++    ps3_host_input_release_all(ps3_pad_host_input());
++    assert(cellPadEnd() == CELL_OK);
++    unsetenv("PS3_PAD_FIRST_PORT");
++    s_first_port = -1;
 +    printf("test_pad_hotplug: ok\n");
 +    return 0;
 +}
@@ -8266,6 +8627,235 @@ index 0000000..9e551e0
 +
 +    assert(cellPadEnd() == CELL_OK);
 +    puts("cellPad sensor mode checks passed");
++    return 0;
++}
+diff --git a/libs/input/tests/test_pad_virtual.c b/libs/input/tests/test_pad_virtual.c
+new file mode 100644
+index 0000000..e0db29c
+--- /dev/null
++++ b/libs/input/tests/test_pad_virtual.c
+@@ -0,0 +1,223 @@
++/* cellPad's test inputs for local multiplayer: the virtual pads on ports 1-3
++ * (PAD2_SCRIPT, PAD2_STICK, PAD2_FILE, PAD2_CONNECT; the port reads
++ * connected, a late connect is flagged ASSIGN_CHANGES once, presses latch
++ * for their poll count, sticks override, port 0 is untouched), KEY_SCRIPT
++ * (keys and mouse buttons held in the window's input block for their time,
++ * through the normal keyboard path: WASD moves the left stick, Return/Escape
++ * mean CROSS/CIRCLE in a menu) and PS3_PAD_FIRST_PORT's parsing.
++ *
++ *   clang -std=gnu17 -I include -I "$SDL/include" -I "$SDL/include/SDL2" \
++ *         libs/input/tests/test_pad_virtual.c -L "$SDL/lib" -lSDL2 \
++ *         -Wl,-rpath,"$SDL/lib" -o /tmp/test_pad_virtual && /tmp/test_pad_virtual
++ *
++ * ($SDL: any SDL2 prefix, e.g. Homebrew's or the launcher's deps folder.)
++ * Times run on the flip clock (PAD_CLOCK=flips), which the test sets.
++ */
++#include "../cellPad.c"
++#include <assert.h>
++#include <sys/mman.h>
++
++/* The DualSense extras: not exercised here. */
++void SDL_GameControllerSetPlayerIndex(SDL_GameController* gc, int i) { (void)gc; (void)i; }
++SDL_bool SDL_GameControllerHasLED(SDL_GameController* gc) { (void)gc; return SDL_FALSE; }
++int SDL_GameControllerSetLED(SDL_GameController* gc, Uint8 r, Uint8 g, Uint8 b) { (void)gc; (void)r; (void)g; (void)b; return 0; }
++SDL_bool SDL_GameControllerHasSensor(SDL_GameController* gc, SDL_SensorType t) { (void)gc; (void)t; return SDL_FALSE; }
++int SDL_GameControllerSetSensorEnabled(SDL_GameController* gc, SDL_SensorType t, SDL_bool on) { (void)gc; (void)t; (void)on; return -1; }
++int SDL_GameControllerGetSensorData(SDL_GameController* gc, SDL_SensorType t, float* d, int n) { (void)gc; (void)t; (void)d; (void)n; return -1; }
++uint8_t* vm_base;
++uint32_t ppu_vm_size;
++int g_resv_store_active;
++uint32_t g_ww_lo, g_ww_hi;
++void ppu_resv_break_store(uint64_t ea) { (void)ea; }
++void ps3_ww_report_inline(uint32_t a, uint64_t v, int w) { (void)a; (void)v; (void)w; }
++int spu_coh_is_reserved(uint32_t a) { (void)a; return 0; }
++void spu_coh_notify_write(uint32_t a) { (void)a; }
++void spu_lockline_lock(void) {}
++void spu_lockline_unlock(void) {}
++void ppu_bctrl_ring_dump_all(const char* t) { (void)t; }
++void ppu_dump_inputsys(const char* t) { (void)t; }
++void ppu_statescan_diff(uint32_t a, uint32_t b, const char* t) { (void)a; (void)b; (void)t; }
++
++static u32 s_flips;
++u32 cellGcm_flip_request_count(void) { return s_flips; }
++
++static ps3_host_input s_win;
++static int s_menu;
++static int fake_menu(void) { return s_menu; }
++
++#define DATA 0x1000u
++#define INFO 0x2000u
++
++/* One packet of `port`; the digital buttons as one mask. */
++static unsigned packet(u32 port, u16* lx, u16* ly)
++{
++    assert(cellPadGetData(port, (CellPadData*)(uintptr_t)DATA) == CELL_OK);
++    const unsigned d1 = vm_read16(DATA + 4 + CELL_PAD_BTN_OFFSET_DIGITAL1 * 2);
++    const unsigned d2 = vm_read16(DATA + 4 + CELL_PAD_BTN_OFFSET_DIGITAL2 * 2);
++    if (lx) *lx = vm_read16(DATA + 4 + CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X * 2);
++    if (ly) *ly = vm_read16(DATA + 4 + CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y * 2);
++    return (d2 << 8) | d1;
++}
++
++static u32 port_status(u32 port)
++{
++    assert(cellPadGetInfo2((CellPadInfo2*)(uintptr_t)INFO) == CELL_OK);
++    return vm_read32(INFO + 12 + port * 4);   /* max, now, system_info, port_status[] */
++}
++
++static void test_virtual_pad(void)
++{
++    setenv("PAD2_SCRIPT", "2:0x0008, 5:0x4000:3", 1);   /* START at flip 2, CROSS at 5 for 3 reads */
++    setenv("PAD2_STICK", "128,0,200,128,8,10", 1);       /* left stick up during flips 8-9 */
++    s_flips = 0;
++    assert(cellPadInit(7) == CELL_OK);
++    assert(port_status(1) & CELL_PAD_STATUS_CONNECTED);
++    assert(!(port_status(1) & CELL_PAD_STATUS_ASSIGN_CHANGES));   /* there from the start */
++    assert(!(port_status(2) & CELL_PAD_STATUS_CONNECTED));
++
++    u16 lx, ly;
++    assert(packet(1, &lx, &ly) == 0 && lx == 128 && ly == 128);
++    s_flips = 2;
++    for (int i = 0; i < 40; i++) assert(packet(1, NULL, NULL) == CELL_PAD_CTRL_START);
++    assert(packet(1, NULL, NULL) == 0);                 /* 40 reads, then up */
++    assert(packet(0, NULL, NULL) == 0);                 /* port 0 is not the script's */
++    s_flips = 5;
++    for (int i = 0; i < 3; i++) assert(packet(1, NULL, NULL) == CELL_PAD_CTRL_CROSS);
++    assert(packet(1, NULL, NULL) == 0);
++    s_flips = 8;
++    assert(packet(1, &lx, &ly) == 0 && lx == 128 && ly == 0);
++    u16 lx0, ly0;
++    packet(0, &lx0, &ly0);
++    assert(lx0 == 128 && ly0 == 128);
++    s_flips = 10;
++    assert(packet(1, &lx, &ly) == 0 && ly == 128);
++    assert(cellPadEnd() == CELL_OK);
++    unsetenv("PAD2_SCRIPT");
++    unsetenv("PAD2_STICK");
++    s_virt_state = -1;
++    s_virt_t0 = 0;
++}
++
++static void test_virtual_connect_late_and_file(void)
++{
++    char path[] = "/tmp/test_pad_virtual.XXXXXX";
++    const int fd = mkstemp(path);
++    assert(fd >= 0);
++    close(fd);
++    setenv("PAD3_CONNECT", "4", 1);
++    setenv("PAD3_FILE", path, 1);
++    s_flips = 0;
++    assert(cellPadInit(7) == CELL_OK);
++    assert(!(port_status(2) & CELL_PAD_STATUS_CONNECTED));
++    assert(packet(2, NULL, NULL) == 0);
++    s_flips = 4;
++    usleep(10 * 1000);                                   /* past the poll interval */
++    const u32 st = port_status(2);
++    assert((st & CELL_PAD_STATUS_CONNECTED) && (st & CELL_PAD_STATUS_ASSIGN_CHANGES));
++    assert(!(port_status(2) & CELL_PAD_STATUS_ASSIGN_CHANGES));   /* flagged once */
++
++    FILE* f = fopen(path, "w"); fputs("0x1000 2\n", f); fclose(f);   /* TRIANGLE for 2 reads */
++    assert(packet(2, NULL, NULL) == CELL_PAD_CTRL_TRIANGLE);
++    assert(packet(2, NULL, NULL) == CELL_PAD_CTRL_TRIANGLE);
++    assert(packet(2, NULL, NULL) == 0);
++    f = fopen(path, "r"); assert(fgetc(f) == EOF); fclose(f);        /* taken */
++    f = fopen(path, "w"); fputs("S 255 128 128 128 1\n", f); fclose(f);
++    u16 lx, ly;
++    packet(2, &lx, &ly); assert(lx == 255 && ly == 128);
++    packet(2, &lx, &ly); assert(lx == 128);
++    assert(cellPadEnd() == CELL_OK);
++    unlink(path);
++    unsetenv("PAD3_CONNECT");
++    unsetenv("PAD3_FILE");
++    s_virt_state = -1;
++    s_virt_t0 = 0;
++}
++
++static unsigned keys_now(unsigned vk)
++{
++    return (atomic_load(&s_win.keys[vk >> 5]) >> (vk & 31)) & 1u;
++}
++
++static void test_key_script(void)
++{
++    /* W+Space from flip 1 for 3000 flips' worth of ms (the flip clock counts
++     * flips as seconds), Return at 10, Escape at 20, the left mouse button
++     * at 30; an unknown name is skipped with its event. */
++    setenv("KEY_SCRIPT", "1:W+Space:2000, 10:Return, 20:escape:500, 30:MouseLeft, 40:Nope", 1);
++    s_kscript_n = -1;
++    cellPad_set_menu_query(fake_menu);
++    s_menu = 0;
++    s_flips = 0;
++    pad_poll_keys(0);
++    assert(s_kscript_n == 4);
++    assert(!keys_now(0x0D) && s_host_state[0].buttons == 0);
++
++    s_flips = 1;
++    pad_poll_keys(0);
++    assert(keys_now(0x0D) && keys_now(0x31));
++    assert(s_host_state[0].analog_ly == 0);               /* W: left stick up */
++    assert(s_host_state[0].buttons == CELL_PAD_CTRL_CROSS);   /* Space: jump */
++    ps3_host_input_release_all(&s_win);                   /* the window lost focus ... */
++    pad_poll_keys(0);
++    assert(keys_now(0x0D));                               /* ... the script holds it again */
++    ps3_host_input_key(&s_win, 0x00, 1);                  /* A from the real keyboard */
++    s_flips = 3;
++    pad_poll_keys(0);
++    assert(!keys_now(0x0D) && !keys_now(0x31));           /* let go when its time is up */
++    assert(keys_now(0x00));                               /* the window's own key stays */
++    ps3_host_input_key(&s_win, 0x00, 0);
++
++    s_flips = 10;                                         /* Return in a menu: CROSS */
++    s_menu = 1;
++    pad_poll_keys(0);
++    assert(s_host_state[0].buttons == CELL_PAD_CTRL_CROSS);
++    s_flips = 11;
++    pad_poll_keys(0);
++    assert(s_host_state[0].buttons == 0);
++    s_flips = 20;                                         /* Escape in a menu: CIRCLE */
++    pad_poll_keys(0);
++    assert(s_host_state[0].buttons == CELL_PAD_CTRL_CIRCLE);
++    s_flips = 21;
++    pad_poll_keys(0);
++    s_menu = 0;
++    s_flips = 30;
++    pad_poll_keys(0);
++    assert(atomic_load(&s_win.mouse_buttons) == 1u);      /* left button: R1, fire */
++    assert(s_host_state[0].buttons == CELL_PAD_CTRL_R1);
++    s_flips = 31;
++    pad_poll_keys(0);
++    assert(atomic_load(&s_win.mouse_buttons) == 0u);
++    cellPad_set_menu_query(NULL);
++    unsetenv("KEY_SCRIPT");
++    s_kscript_n = -1;
++}
++
++static void test_first_port(void)
++{
++    assert(pad_first_port_from(NULL) == 0);
++    assert(pad_first_port_from("") == 0);
++    assert(pad_first_port_from("1") == 1);
++    assert(pad_first_port_from("3") == 3);
++    assert(pad_first_port_from("4") == 0);
++    assert(pad_first_port_from("-1") == 0);
++}
++
++int main(void)
++{
++    setenv("PS3_PAD_SDL", "0", 1);
++    setenv("PAD_CLOCK", "flips", 1);
++    unsetenv("PS3_INPUT_MAP");
++    unsetenv("PS3_INPUT_MODE");
++    unsetenv("PAD_SCRIPT");
++    unsetenv("PAD_STICK");
++    unsetenv("PS3_MOUSE");
++    vm_base = mmap(NULL, 1u << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
++    assert(vm_base != MAP_FAILED);
++    ps3_pad_host_input_attach(&s_win);
++    test_virtual_pad();
++    test_virtual_connect_late_and_file();
++    test_key_script();
++    test_first_port();
++    printf("test_pad_virtual: ok\n");
 +    return 0;
 +}
 diff --git a/libs/misc/cellAvconfExt.c b/libs/misc/cellAvconfExt.c
@@ -10362,10 +10952,10 @@ index 5a1d37f..f02f431 100644
  }
  
 diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
-index 286bf47..c2e5301 100644
+index 286bf47..bc7cfd3 100644
 --- a/libs/system/cellSaveData.c
 +++ b/libs/system/cellSaveData.c
-@@ -62,8 +62,16 @@ static void adopt_gamedata_root(void)
+@@ -62,8 +62,48 @@ static void adopt_gamedata_root(void)
      if (s_done) return;
      s_done = 1;
      const char* env = getenv("PS3_GAMEDATA_ROOT");
@@ -10380,10 +10970,84 @@ index 286bf47..c2e5301 100644
 +    env = getenv("PS3_HDD0_ROOT");
 +    if (env && *env)
 +        snprintf(s_save_root, sizeof(s_save_root), "%s/home/00000001/savedata", env);
++}
++
++/* The User* entry points (cellSaveDataUserAutoLoad, UserListAutoSave ...)
++ * name the account whose saves they mean: user 1 (or 0, the current one) is
++ * s_save_root; another user's saves are its own home, home/<id>/savedata
++ * beside user 1's -- a split-screen second player (cellUserInfo's PS3_USERS)
++ * gets a profile of its own instead of loading and overwriting the first
++ * player's. Set for the length of one call, on the calling thread (the
++ * title's callbacks run inside it). */
++#ifdef _WIN32
++#define SAVEDATA_TLS __declspec(thread)
++#else
++#define SAVEDATA_TLS _Thread_local
++#endif
++static SAVEDATA_TLS char s_user_root[1024];
++
++static const char* save_root(void)
++{
++    return s_user_root[0] ? s_user_root : s_save_root;
++}
++
++/* Enter (userId) / leave (0) a User* call. */
++static void savedata_user_scope(u32 userId)
++{
++    s_user_root[0] = 0;
++    if (userId <= 1) return;
++    adopt_gamedata_root();
++    static const char tail[] = "/00000001/savedata";
++    const size_t n = strlen(s_save_root), t = sizeof tail - 1;
++    if (n < t || strcmp(s_save_root + n - t, tail) != 0) return;   /* not a home: one root for all */
++    snprintf(s_user_root, sizeof s_user_root, "%.*s/%08u/savedata", (int)(n - t), s_save_root, userId);
++    printf("[cellSaveData] user %u: saves in %s\n", userId, s_user_root);
  }
  
  /* Ensure directory (and parents) exist */
-@@ -531,50 +539,50 @@ static u32 savedata_content_type(const char* name)
+@@ -87,7 +127,7 @@ static void ensure_dirs(const char* path)
+ static void build_save_path(char* buf, size_t buf_size, const char* dirName)
+ {
+     adopt_gamedata_root();
+-    snprintf(buf, buf_size, "%s/%s", s_save_root, dirName);
++    snprintf(buf, buf_size, "%s/%s", save_root(), dirName);
+ #ifdef _WIN32
+     for (char* p = buf; *p; p++) {
+         if (*p == '/') *p = '\\';
+@@ -452,12 +492,12 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
+     u32 count = 0;
+ 
+     adopt_gamedata_root();
+-    ensure_dirs(s_save_root);
++    ensure_dirs(save_root());
+ 
+ #ifdef _WIN32
+     {
+         char search[1024];
+-        snprintf(search, sizeof(search), "%s\\*", s_save_root);
++        snprintf(search, sizeof(search), "%s\\*", save_root());
+         for (char* p = search; *p; p++) {
+             if (*p == '/') *p = '\\';
+         }
+@@ -486,7 +526,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
+     }
+ #else
+     {
+-        DIR* dp = opendir(s_save_root);
++        DIR* dp = opendir(save_root());
+         if (!dp)
+             return 0;
+ 
+@@ -496,7 +536,7 @@ static u32 enumerate_save_dirs(const char* prefix, CellSaveDataDirList* dirList,
+                 continue;
+             /* Check it's a directory */
+             char full[1024];
+-            snprintf(full, sizeof(full), "%s/%s", s_save_root, de->d_name);
++            snprintf(full, sizeof(full), "%s/%s", save_root(), de->d_name);
+             if (!dir_exists(full))
+                 continue;
+             if (prefix && prefix[0] && strncmp(de->d_name, prefix, strlen(prefix)) != 0)
+@@ -531,50 +571,50 @@ static u32 savedata_content_type(const char* name)
      return CELL_SAVEDATA_FILETYPE_NORMALFILE;
  }
  
@@ -10478,7 +11142,7 @@ index 286bf47..c2e5301 100644
  /* Enumerate files in a save directory. Returns count, fills fileList up to max. */
  static u32 enumerate_save_files(const char* save_path,
                                   CellSaveDataFileStat* fileList, u32 max)
-@@ -595,7 +603,7 @@ static u32 enumerate_save_files(const char* save_path,
+@@ -595,7 +635,7 @@ static u32 enumerate_save_files(const char* save_path,
                  continue;
              if (count < max && fileList) {
                  memset(&fileList[count], 0, sizeof(CellSaveDataFileStat));
@@ -10487,7 +11151,7 @@ index 286bf47..c2e5301 100644
                  strncpy(fileList[count].fileName, fd.cFileName,
                          CELL_SAVEDATA_FILENAME_SIZE - 1);
                  ULARGE_INTEGER sz;
-@@ -632,7 +640,7 @@ static u32 enumerate_save_files(const char* save_path,
+@@ -632,7 +672,7 @@ static u32 enumerate_save_files(const char* save_path,
  #endif
              if (count < max && fileList) {
                  memset(&fileList[count], 0, sizeof(CellSaveDataFileStat));
@@ -10496,7 +11160,7 @@ index 286bf47..c2e5301 100644
                  strncpy(fileList[count].fileName, de->d_name,
                          CELL_SAVEDATA_FILENAME_SIZE - 1);
                  fileList[count].st_size = (u64)st.st_size;
-@@ -737,8 +745,8 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
+@@ -737,8 +777,8 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
          size_t wrote = fwrite(set->fileBuf, 1, write_size, fp);
          int failed = wrote != write_size;
          if (fclose(fp) != 0) failed = 1;
@@ -10507,7 +11171,7 @@ index 286bf47..c2e5301 100644
          return failed ? CELL_SAVEDATA_ERROR_ACCESS_ERROR : (s32)wrote;
      }
  
-@@ -842,11 +850,39 @@ static void read_param_sfo(const char* save_path, CellSaveDataSystemFileParam* p
+@@ -842,11 +882,39 @@ static void read_param_sfo(const char* save_path, CellSaveDataSystemFileParam* p
  }
  
  /* Core save/load implementation shared by List/Fixed/Auto variants */
@@ -10547,10 +11211,44 @@ index 286bf47..c2e5301 100644
  {
      if (!dirName || !funcStat)
          return CELL_SAVEDATA_ERROR_PARAM;
-@@ -1551,6 +1587,91 @@ static void hle_cellSaveDataUserAutoSave(ppu_context* ctx)
-                              container, (void*)(uintptr_t)userdata);
+@@ -1170,7 +1238,7 @@ static s32 savedata_fixed(int is_save, CellSaveDataSetList* setList,
+         }
+         printf("[cellSaveData] savedata_fixed: cbresult=%d listed=%u/%u prefix='%s' root='%s'\n",
+                result, listed, count,
+-               prefix ? (const char*)(vm_base + prefix) : "", s_save_root);
++               prefix ? (const char*)(vm_base + prefix) : "", save_root());
+         SAVEDATA_REJECT(CELL_SAVEDATA_ERROR_CBRESULT, w);
+     }
+     if (!funcStat)
+@@ -1516,12 +1584,14 @@ static void hle_cellSaveDataUserAutoLoad(ppu_context* ctx)
+     uint32_t userdata = savedata_arg9(ctx);
+ 
+     printf("[cellSaveData] UserAutoLoad(user=%u, userdata=0x%08X)\n", userId, userdata);
++    savedata_user_scope((u32)ctx->gpr[4]);
+     ctx->gpr[3] = (uint64_t)(int64_t)(s32)
+         cellSaveDataAutoLoad2(version, dir, errDialog,
+                               (CellSaveDataSetBuf*)setBuf,
+                               (CellSaveDataStatCallback)funcStat,
+                               (CellSaveDataFileCallback)funcFile,
+                               container, (void*)(uintptr_t)userdata);
++    savedata_user_scope(0);
  }
  
+ /* UserAutoSave takes the same nine arguments as UserAutoLoad. Through the
+@@ -1543,12 +1613,107 @@ static void hle_cellSaveDataUserAutoSave(ppu_context* ctx)
+     /* cellSaveDataAutoSave, not AutoSave2: AutoSave2 maps dirName to a host
+      * pointer and passes it on to AutoSave, which maps it again; a host
+      * address below 4 GiB would then be read as a guest one. */
++    savedata_user_scope((u32)ctx->gpr[4]);
+     ctx->gpr[3] = (uint64_t)(int64_t)(s32)
+         cellSaveDataAutoSave(version, dir, errDialog,
+                              (CellSaveDataSetBuf*)setBuf,
+                              (CellSaveDataStatCallback)funcStat,
+                              (CellSaveDataFileCallback)funcFile,
+                              container, (void*)(uintptr_t)userdata);
++    savedata_user_scope(0);
++}
++
 +/* The n-th argument (9 or more) from the caller's parameter save area, one
 + * doubleword each after arg9 (savedata_arg9 above). */
 +static uint32_t savedata_stack_arg(ppu_context* ctx, unsigned n)
@@ -10575,6 +11273,7 @@ index 286bf47..c2e5301 100644
 +    const uint32_t userdata = savedata_stack_arg(ctx, 10);
 +    printf("[cellSaveData] UserListAutoSave(user=%u, userdata=0x%08X)\n", (u32)ctx->gpr[4], userdata);
 +    if (errDialog > 2) { ctx->gpr[3] = (uint64_t)(int64_t)(s32)CELL_SAVEDATA_ERROR_PARAM; return; }
++    savedata_user_scope((u32)ctx->gpr[4]);
 +    ctx->gpr[3] = (uint64_t)(int64_t)(s32)savedata_fixed(1,
 +        (CellSaveDataSetList*)(uintptr_t)(u32)ctx->gpr[6],
 +        (CellSaveDataSetBuf*)(uintptr_t)(u32)ctx->gpr[7],
@@ -10582,6 +11281,7 @@ index 286bf47..c2e5301 100644
 +        (CellSaveDataStatCallback)(uintptr_t)(u32)ctx->gpr[9],
 +        (CellSaveDataFileCallback)(uintptr_t)(u32)ctx->gpr[10],
 +        (void*)(uintptr_t)userdata);
++    savedata_user_scope(0);
 +}
 +
 +/* UserListAutoLoad, the same shape as UserListAutoSave. Resistance 2's boot
@@ -10599,6 +11299,7 @@ index 286bf47..c2e5301 100644
 +    const uint32_t userdata = savedata_stack_arg(ctx, 10);
 +    printf("[cellSaveData] UserListAutoLoad(user=%u, userdata=0x%08X)\n", (u32)ctx->gpr[4], userdata);
 +    if (errDialog > 2) { ctx->gpr[3] = (uint64_t)(int64_t)(s32)CELL_SAVEDATA_ERROR_PARAM; return; }
++    savedata_user_scope((u32)ctx->gpr[4]);
 +    const s32 rc = savedata_fixed(0,
 +        (CellSaveDataSetList*)(uintptr_t)(u32)ctx->gpr[6],
 +        (CellSaveDataSetBuf*)(uintptr_t)(u32)ctx->gpr[7],
@@ -10608,12 +11309,14 @@ index 286bf47..c2e5301 100644
 +        (void*)(uintptr_t)userdata);
 +    printf("[cellSaveData] UserListAutoLoad -> 0x%08X\n", (u32)rc);
 +    ctx->gpr[3] = (uint64_t)(int64_t)rc;
++    savedata_user_scope(0);
 +}
 +
 +static void hle_cellSaveDataUserListSave(ppu_context* ctx)
 +{
 +    const uint32_t userdata = savedata_stack_arg(ctx, 9);
 +    printf("[cellSaveData] UserListSave(user=%u, userdata=0x%08X)\n", (u32)ctx->gpr[4], userdata);
++    savedata_user_scope((u32)ctx->gpr[4]);
 +    ctx->gpr[3] = (uint64_t)(int64_t)(s32)cellSaveDataListSave2((u32)ctx->gpr[3],
 +        (CellSaveDataSetList*)(uintptr_t)(u32)ctx->gpr[5],
 +        (CellSaveDataSetBuf*)(uintptr_t)(u32)ctx->gpr[6],
@@ -10621,12 +11324,14 @@ index 286bf47..c2e5301 100644
 +        (CellSaveDataStatCallback)(uintptr_t)(u32)ctx->gpr[8],
 +        (CellSaveDataFileCallback)(uintptr_t)(u32)ctx->gpr[9],
 +        (u32)ctx->gpr[10], (void*)(uintptr_t)userdata);
++    savedata_user_scope(0);
 +}
 +
 +static void hle_cellSaveDataUserListLoad(ppu_context* ctx)
 +{
 +    const uint32_t userdata = savedata_stack_arg(ctx, 9);
 +    printf("[cellSaveData] UserListLoad(user=%u, userdata=0x%08X)\n", (u32)ctx->gpr[4], userdata);
++    savedata_user_scope((u32)ctx->gpr[4]);
 +    ctx->gpr[3] = (uint64_t)(int64_t)(s32)cellSaveDataListLoad2((u32)ctx->gpr[3],
 +        (CellSaveDataSetList*)(uintptr_t)(u32)ctx->gpr[5],
 +        (CellSaveDataSetBuf*)(uintptr_t)(u32)ctx->gpr[6],
@@ -10634,12 +11339,11 @@ index 286bf47..c2e5301 100644
 +        (CellSaveDataStatCallback)(uintptr_t)(u32)ctx->gpr[8],
 +        (CellSaveDataFileCallback)(uintptr_t)(u32)ctx->gpr[9],
 +        (u32)ctx->gpr[10], (void*)(uintptr_t)userdata);
-+}
-+
++    savedata_user_scope(0);
+ }
+ 
  /* ListAutoLoad's ninth argument is in the guest parameter save area. */
- void ps3_savedata_list_auto_load(ppu_context* ctx)
- {
-@@ -1572,6 +1693,16 @@ void cellSaveData_register_ctx_handlers(void)
+@@ -1572,6 +1737,16 @@ void cellSaveData_register_ctx_handlers(void)
                           hle_cellSaveDataUserAutoLoad);
      ps3_hle_register_ctx(0x52AAC4FAu, "cellSaveDataUserAutoSave",
                           hle_cellSaveDataUserAutoSave);
@@ -10778,6 +11482,231 @@ index 238e188..d265b33 100644
  #ifdef __cplusplus
  }
  #endif
+diff --git a/libs/system/cellUserInfo.c b/libs/system/cellUserInfo.c
+index c5ac35e..c9e3ba3 100644
+--- a/libs/system/cellUserInfo.c
++++ b/libs/system/cellUserInfo.c
+@@ -1,14 +1,29 @@
+ /*
+  * ps3recomp - cellUserInfo HLE implementation
+  *
+- * Reports a single default user (ID=00000001, name="User").
++ * The console's user accounts. By default there is one, ID 00000001 named
++ * "User", which is also the one logged in. PS3_USERS="<name>,<name>,..."
++ * lists the accounts instead (ids 1, 2, ... in that order; user 1 stays the
++ * logged-in one), so a title that has a second local player log in -- a
++ * split-screen co-op join opens the user selection overlay,
++ * cellUserInfoSelectUser_ListType -- finds someone to pick.
++ *
++ * There is no overlay to show: the selection finishes at once and its
++ * callback runs on the next cellSysutilCheckCallback, with the chosen
++ * account's CellUserInfoUserStat. It picks
++ * PS3_USER_SELECT=<id> when set (0 = the player cancelled), else the list's
++ * focus user when that is a valid account other than the logged-in one,
++ * else the first account that is not logged in, else user 1.
+  */
+ 
+ #include "cellUserInfo.h"
++#include "cellSysutil.h"   /* cellSysutilQueueGuestCallbackArgs */
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <stdint.h>
+ #include "../../runtime/ppu/ppu_memory.h"   /* vm_base (guest mem) */
++#include "../../runtime/memory/vm.h"          /* VM_HLE_INJECT_BASE */
+ /* HLE args arrive as guest effective addresses; translate before deref. */
+ #define GUEST_PTR(p, T) ((T)((p) ? (void*)(vm_base + (uint32_t)(uintptr_t)(p)) : (void*)0))
+ /* The guest is big-endian; u32 fields we write into guest structs must be stored
+@@ -21,13 +36,57 @@
+  * Internal state
+  * -----------------------------------------------------------------------*/
+ 
+-/* The emulated PS3 has one user */
+-#define EMU_USER_ID     CELL_USERINFO_DEFAULT_USER_ID
++#define EMU_USER_ID     CELL_USERINFO_DEFAULT_USER_ID   /* the logged-in user */
+ #define EMU_USER_NAME   "User"
+-#define EMU_HOME_DIR    "/dev_hdd0/home/00000001"
+ 
+ static u32 s_selected_user = EMU_USER_ID;
+ 
++static int  s_user_n = -1;                      /* -1: PS3_USERS not read yet */
++static char s_user_name[CELL_USERINFO_USER_MAX][CELL_USERINFO_USERNAME_SIZE];
++
++static void userinfo_load(void)
++{
++    if (s_user_n >= 0) return;
++    int n = 0;
++    const char* e = getenv("PS3_USERS");
++    while (e && *e && n < CELL_USERINFO_USER_MAX) {
++        while (*e == ' ' || *e == ',') e++;
++        if (!*e) break;
++        size_t len = strcspn(e, ",");
++        size_t end = len;
++        while (end && e[end - 1] == ' ') end--;
++        if (end >= CELL_USERINFO_USERNAME_SIZE) end = CELL_USERINFO_USERNAME_SIZE - 1;
++        memcpy(s_user_name[n], e, end);
++        s_user_name[n][end] = 0;
++        if (end) n++;
++        e += len;
++    }
++    if (!n) { strcpy(s_user_name[0], EMU_USER_NAME); n = 1; }
++    else    printf("[cellUserInfo] %d user(s) from PS3_USERS\n", n);
++    s_user_n = n;
++}
++
++/* 1 if `id` is an account. */
++static int userinfo_valid(u32 id)
++{
++    userinfo_load();
++    return id >= 1 && id <= (u32)s_user_n;
++}
++
++/* The account a selection overlay ends with; 0 = cancelled. */
++static u32 userinfo_pick(u32 focus)
++{
++    const char* e = getenv("PS3_USER_SELECT");
++    if (e && *e) {
++        const u32 id = (u32)strtoul(e, NULL, 10);
++        return id == 0 || userinfo_valid(id) ? id : EMU_USER_ID;
++    }
++    if (focus != EMU_USER_ID && userinfo_valid(focus)) return focus;
++    for (u32 id = 1; userinfo_valid(id); id++)
++        if (id != EMU_USER_ID) return id;
++    return EMU_USER_ID;
++}
++
+ /* ---------------------------------------------------------------------------
+  * API implementations
+  * -----------------------------------------------------------------------*/
+@@ -38,14 +97,16 @@ s32 cellUserInfoGetStat(u32 id, CellUserInfoUserStat* stat)
+         return CELL_USERINFO_ERROR_PARAM;
+     stat = GUEST_PTR(stat, CellUserInfoUserStat*);
+ 
+-    if (id != EMU_USER_ID)
++    /* CELL_SYSUTIL_USERID_CURRENT (0): the logged-in user. */
++    if (id == 0) id = EMU_USER_ID;
++    if (!userinfo_valid(id))
+         return CELL_USERINFO_ERROR_NOUSER;
+ 
+     /* NOTE: write ONLY the real 68-byte struct (id+name). Anything more
+      * overflows the guest's stack buffer (see header comment). */
+     memset(stat, 0, sizeof(CellUserInfoUserStat));
+-    stat->id = BE32(EMU_USER_ID);
+-    strncpy(stat->name, EMU_USER_NAME, CELL_USERINFO_USERNAME_SIZE - 1);
++    stat->id = BE32(id);
++    strncpy(stat->name, s_user_name[id - 1], CELL_USERINFO_USERNAME_SIZE - 1);
+ 
+     return CELL_OK;
+ }
+@@ -56,13 +117,15 @@ s32 cellUserInfoGetList(u32* listNum, CellUserInfoUserList* list, u32* currentUs
+     u32* listNum_h = GUEST_PTR(listNum, u32*);
+     CellUserInfoUserList* list_h = GUEST_PTR(list, CellUserInfoUserList*);
+     u32* currentUser_h = GUEST_PTR(currentUser, u32*);
++    userinfo_load();
+ 
+     if (listNum_h)
+-        *listNum_h = BE32(1);
++        *listNum_h = BE32((u32)s_user_n);
+ 
+     if (list_h) {
+         memset(list_h, 0, sizeof(CellUserInfoUserList));
+-        list_h->userId[0] = BE32(EMU_USER_ID);
++        for (int i = 0; i < s_user_n; i++)
++            list_h->userId[i] = BE32((u32)(i + 1));
+     }
+ 
+     if (currentUser_h)
+@@ -71,6 +134,41 @@ s32 cellUserInfoGetList(u32* listNum, CellUserInfoUserList* list, u32* currentUs
+     return CELL_OK;
+ }
+ 
++/* The user selection overlay (NID 0x3097CC1C): pick an account, then
++ * funcSelect(result, CellUserInfoUserStat* selectedUser, userdata) from the
++ * next sysutil callback check, as the overlay's close does. The stat (id,
++ * name) lives in the HLE window: the callback reads the id through the
++ * pointer (Resistance 3's "P2 Join" logs the second player in with it; a
++ * bare id there read as user 0, the logged-in one). */
++#define USERINFO_SELECTED_STAT_EA (VM_HLE_INJECT_BASE + 0x8000u)   /* 68 bytes */
++s32 cellUserInfoSelectUser_ListType(CellUserInfoTypeSet* setList, u32 funcSelect,
++                                    u32 container, void* userdata)
++{
++    (void)container;
++    const u32 ea = (u32)(uintptr_t)setList;
++    if (!ea || !funcSelect)
++        return CELL_USERINFO_ERROR_PARAM;
++    const u32 title = vm_read32(ea + 0), focus = vm_read32(ea + 4), type = vm_read32(ea + 8);
++    if (type > CELL_USERINFO_LISTTYPE_SIGNIN)
++        return CELL_USERINFO_ERROR_PARAM;
++    const u32 id = userinfo_pick(focus);
++    char t[64] = "";
++    if (title && vm_base) { strncpy(t, (const char*)(vm_base + title), sizeof t - 1); }
++    printf("[cellUserInfo] SelectUser_ListType(title=\"%s\" focus=%d type=%u) -> %s %u\n",
++           t, (int)focus, type, id ? "user" : "cancelled", id);
++    fflush(stdout);
++    const u32 stat = USERINFO_SELECTED_STAT_EA;
++    memset(vm_base + stat, 0, sizeof(CellUserInfoUserStat));
++    if (id) {
++        s_selected_user = id;
++        vm_write32(stat, id);
++        strncpy((char*)(vm_base + stat + 4), s_user_name[id - 1], CELL_USERINFO_USERNAME_SIZE - 1);
++    }
++    const u64 args[8] = { (u64)(id ? CELL_USERINFO_RET_OK : CELL_USERINFO_RET_CANCEL),
++                          (u64)(id ? stat : 0), (u64)(uintptr_t)userdata, 0, 0, 0, 0, 0 };
++    return cellSysutilQueueGuestCallbackArgs(funcSelect, args);
++}
++
+ s32 cellUserInfoSelectUser_ListSet(u32 listType,
+                                     const CellUserInfoListSet* listSet,
+                                     CellUserInfoFinishCallback callback,
+@@ -117,11 +215,11 @@ s32 cellUserInfoGetHomeDir(u32 id, char* homePath, u32 homePathSize)
+         return CELL_USERINFO_ERROR_PARAM;
+     homePath = GUEST_PTR(homePath, char*);
+ 
+-    if (id != EMU_USER_ID)
++    if (id == 0) id = EMU_USER_ID;
++    if (!userinfo_valid(id))
+         return CELL_USERINFO_ERROR_NOUSER;
+ 
+-    strncpy(homePath, EMU_HOME_DIR, homePathSize - 1);
+-    homePath[homePathSize - 1] = '\0';
++    snprintf(homePath, homePathSize, "/dev_hdd0/home/%08u", id);
+ 
+     return CELL_OK;
+ }
+diff --git a/libs/system/cellUserInfo.h b/libs/system/cellUserInfo.h
+index e9813be..cd1b646 100644
+--- a/libs/system/cellUserInfo.h
++++ b/libs/system/cellUserInfo.h
+@@ -60,6 +60,20 @@ typedef struct CellUserInfoUserList {
+ /* Callback for user selection (simplified) */
+ typedef void (*CellUserInfoFinishCallback)(s32 result, u32 selectedUser, void* userdata);
+ 
++/* cellUserInfoSelectUser_ListType's list (SDK CellUserInfoTypeSet, 16 bytes,
++ * big-endian): title (char* EA), focus (user id, -1 none), type (ALL or
++ * SIGNIN users), reserved. */
++typedef struct CellUserInfoTypeSet {
++    u32 title;
++    u32 focus;
++    u32 type;
++    u32 reserved;
++} CellUserInfoTypeSet;
++
++#define CELL_USERINFO_RET_OK                0
++#define CELL_USERINFO_RET_CANCEL            1
++#define CELL_USERINFO_FOCUS_LISTHEAD        0xFFFFFFFFu
++
+ /* User selection list set */
+ typedef struct CellUserInfoListSet {
+     u32  focusUser;
+@@ -78,6 +92,8 @@ s32 cellUserInfoSelectUser_ListSet(u32 listType,
+                                     CellUserInfoFinishCallback callback,
+                                     void* userdata);
+ s32 cellUserInfoSelectUser_ListGet(u32* selectedUser);
++s32 cellUserInfoSelectUser_ListType(CellUserInfoTypeSet* setList, u32 funcSelect,
++                                    u32 container, void* userdata);
+ s32 cellUserInfoEnableOverlay(s32 enable);
+ s32 cellUserInfoGetHomeDir(u32 id, char* homePath, u32 homePathSize);
+ 
 diff --git a/libs/system/tests/test_license_area.c b/libs/system/tests/test_license_area.c
 new file mode 100644
 index 0000000..58ad248
@@ -10836,6 +11765,71 @@ index 0000000..58ad248
 +    puts("PASS: licence area default and PS3_LICENSE_AREA override");
 +    return 0;
 +}
+diff --git a/libs/system/tests/test_savedata_user_autosave.c b/libs/system/tests/test_savedata_user_autosave.c
+index b1972b1..1053df5 100644
+--- a/libs/system/tests/test_savedata_user_autosave.c
++++ b/libs/system/tests/test_savedata_user_autosave.c
+@@ -39,6 +39,7 @@ static void (*find(uint32_t nid))(ppu_context*)
+ #define STAT_OPD 0x900u
+ static int s_stat_calls;
+ static uint32_t s_seen_userdata;
++static char s_seen_root[1024];
+ static void guest_callback(u32 opd, u64 cb, u64 get, u64 set,
+                            u64 a, u64 b, u64 c, u64 d, u64 e)
+ {
+@@ -46,6 +47,7 @@ static void guest_callback(u32 opd, u64 cb, u64 get, u64 set,
+     if (opd != STAT_OPD) { vm_write32((u32)cb, (u32)-1); return; }
+     s_stat_calls++;
+     s_seen_userdata = vm_read32((u32)cb + 16);
++    snprintf(s_seen_root, sizeof s_seen_root, "%s", save_root());
+     vm_write32((u32)cb, 1);  /* OK_LAST: finish without a file operation */
+ }
+ 
+@@ -57,7 +59,7 @@ static void check(int ok, const char* what)
+ }
+ 
+ /* Call a nine-argument savedata handler as the dispatcher would. */
+-static void run(const char* name, uint32_t nid, uint32_t userdata)
++static void run_user(const char* name, uint32_t nid, uint32_t userdata, uint32_t user)
+ {
+     char what[160];
+     void (*fn)(ppu_context*) = find(nid);
+@@ -67,7 +69,7 @@ static void run(const char* name, uint32_t nid, uint32_t userdata)
+     ppu_context ctx = {0};
+     ctx.gpr[1]  = 0x400;          /* caller SP */
+     ctx.gpr[3]  = 0;              /* version */
+-    ctx.gpr[4]  = 1;              /* userId */
++    ctx.gpr[4]  = user;           /* userId */
+     ctx.gpr[5]  = 0x300;          /* dirName */
+     ctx.gpr[6]  = 0;              /* errDialog */
+     ctx.gpr[7]  = 0x200;          /* setBuf */
+@@ -83,6 +85,7 @@ static void run(const char* name, uint32_t nid, uint32_t userdata)
+              name, s_seen_userdata, userdata);
+     check(s_seen_userdata == userdata, what);
+ }
++static void run(const char* name, uint32_t nid, uint32_t userdata) { run_user(name, nid, userdata, 1); }
+ 
+ int main(int argc, char** argv)
+ {
+@@ -103,6 +106,18 @@ int main(int argc, char** argv)
+     run("cellSaveDataUserAutoLoad", 0xCDC6AEFDu, 0x0001CAFEu);
+     run("cellSaveDataUserAutoSave", 0x52AAC4FAu, 0x0001BEEFu);
+ 
++    /* Another account's saves are its own home beside user 1's; the
++     * callbacks run inside that scope, and it ends with the call. */
++    char root1[1024], want[1100];
++    snprintf(root1, sizeof root1, "%s/home/00000001/savedata", argv[1]);
++    strcpy(s_save_root, root1);
++    run_user("cellSaveDataUserAutoLoad user 2", 0xCDC6AEFDu, 0x0002CAFEu, 2);
++    snprintf(want, sizeof want, "%s/home/00000002/savedata", argv[1]);
++    check(!strcmp(s_seen_root, want), "user 2: the callbacks see home/00000002/savedata");
++    check(!strcmp(save_root(), root1), "user 2: back to user 1's root after the call");
++    run_user("cellSaveDataUserAutoSave user 0", 0x52AAC4FAu, 0x0002BEEFu, 0);
++    check(!strcmp(s_seen_root, root1), "user 0 (the current one): user 1's root");
++
+     free(vm_base);
+     if (s_failed) { printf("FAIL (%d failed)\n", s_failed); return 1; }
+     puts("PASS (0 failed)");
 diff --git a/libs/system/tests/test_sysconf.c b/libs/system/tests/test_sysconf.c
 new file mode 100644
 index 0000000..eddf0bf
@@ -10891,6 +11885,122 @@ index 0000000..eddf0bf
 +
 +    free(vm_base);
 +    puts("cellSysconf checks passed");
++    return 0;
++}
+diff --git a/libs/system/tests/test_userinfo_select.c b/libs/system/tests/test_userinfo_select.c
+new file mode 100644
+index 0000000..10d4ba6
+--- /dev/null
++++ b/libs/system/tests/test_userinfo_select.c
+@@ -0,0 +1,110 @@
++/* cellUserInfo's accounts and its user selection overlay: one "User" by
++ * default, PS3_USERS lists more (ids 1..n, user 1 logged in), GetStat /
++ * GetList / GetHomeDir follow it, and SelectUser_ListType picks the second
++ * player's account -- PS3_USER_SELECT, else the focus user if it is not the
++ * logged-in one, else the first account that is not logged in, else user 1;
++ * 0 cancels -- with its callback (result, &stat of that user, userdata) on the next
++ * cellSysutilCheckCallback, never inside the call.
++ *
++ *   clang -std=gnu17 -I include libs/system/tests/test_userinfo_select.c libs/system/cellSysutil.c \
++ *         -Wl,-dead_strip -pthread -o /tmp/test_userinfo_select && /tmp/test_userinfo_select
++ */
++#include "../cellMsgDialog.c"   /* what cellSysutil.c links against */
++#include "../cellUserInfo.c"
++#include <assert.h>
++uint8_t* vm_base;
++uint32_t ppu_hle_inject_base = 0x10000;
++uint32_t ppu_vm_size;
++int g_resv_store_active;
++uint32_t g_ww_lo, g_ww_hi;
++void ppu_resv_break_store(uint64_t ea) { (void)ea; }
++void ps3_ww_report_inline(uint32_t a, uint64_t v, int w) { (void)a; (void)v; (void)w; }
++int spu_coh_is_reserved(uint32_t a) { (void)a; return 0; }
++void spu_coh_notify_write(uint32_t a) { (void)a; }
++void spu_lockline_lock(void) {}
++void spu_lockline_unlock(void) {}
++void np_psnr_pump(void) {}
++
++static unsigned calls;
++static u64 last_result, last_id, last_user;
++static char last_name[64];
++/* The callback gets a CellUserInfoUserStat pointer (NULL on cancel). */
++static void callback(u32 opd, u64 result, u64 stat, u64 user, u64 d,
++                     u64 e, u64 f, u64 g, u64 h)
++{
++    assert(opd == 0x400 && !d && !e && !f && !g && !h);
++    calls++; last_result = result; last_user = user;
++    last_id = stat ? vm_read32((u32)stat) : 0;
++    snprintf(last_name, sizeof last_name, "%s", stat ? (const char*)vm_base + stat + 4 : "");
++}
++
++#define SET   0x1000u
++#define STAT  0x2000u
++#define LIST  0x3000u
++#define TITLE 0x4000u
++
++static void select_user(u32 focus, u32 type, s32 want_rc)
++{
++    vm_write32(SET + 0, TITLE);
++    vm_write32(SET + 4, focus);
++    vm_write32(SET + 8, type);
++    vm_write32(SET + 12, 0);
++    const unsigned before = calls;
++    assert(cellUserInfoSelectUser_ListType((CellUserInfoTypeSet*)(uintptr_t)SET, 0x400,
++                                           0xFFFFFFFFu, (void*)(uintptr_t)0xBEEF) == want_rc);
++    assert(calls == before);                  /* not from inside the call */
++    cellSysutilCheckCallback();
++}
++
++int main(void)
++{
++    vm_base = calloc(1, 1u << 20); assert(vm_base);
++    g_ps3_guest_caller = callback;
++    strcpy((char*)vm_base + TITLE, "Select a user");
++    unsetenv("PS3_USER_SELECT");
++
++    /* One account by default: the overlay can only end with it. */
++    unsetenv("PS3_USERS");
++    s_user_n = -1;
++    assert(cellUserInfoGetStat(2, (CellUserInfoUserStat*)(uintptr_t)STAT) == (s32)CELL_USERINFO_ERROR_NOUSER);
++    select_user(CELL_USERINFO_FOCUS_LISTHEAD, CELL_USERINFO_LISTTYPE_ALL, CELL_OK);
++    assert(calls == 1 && last_result == CELL_USERINFO_RET_OK && last_id == 1 && last_user == 0xBEEF);
++
++    /* Two: the second player gets user 2. */
++    setenv("PS3_USERS", "Nathan, Player 2 ", 1);
++    s_user_n = -1;
++    assert(cellUserInfoGetList((u32*)(uintptr_t)LIST, (CellUserInfoUserList*)(uintptr_t)(LIST + 4),
++                               (u32*)(uintptr_t)(LIST + 0x80)) == CELL_OK);
++    assert(vm_read32(LIST) == 2 && vm_read32(LIST + 4) == 1 && vm_read32(LIST + 8) == 2 &&
++           vm_read32(LIST + 12) == 0 && vm_read32(LIST + 0x80) == 1);
++    assert(cellUserInfoGetStat(2, (CellUserInfoUserStat*)(uintptr_t)STAT) == CELL_OK);
++    assert(vm_read32(STAT) == 2 && !strcmp((char*)vm_base + STAT + 4, "Player 2"));
++    assert(cellUserInfoGetStat(0, (CellUserInfoUserStat*)(uintptr_t)STAT) == CELL_OK);   /* current */
++    assert(vm_read32(STAT) == 1 && !strcmp((char*)vm_base + STAT + 4, "Nathan"));
++    assert(cellUserInfoGetHomeDir(2, (char*)(uintptr_t)STAT, 64) == CELL_OK);
++    assert(!strcmp((char*)vm_base + STAT, "/dev_hdd0/home/00000002"));
++    assert(cellUserInfoGetHomeDir(3, (char*)(uintptr_t)STAT, 64) == (s32)CELL_USERINFO_ERROR_NOUSER);
++
++    select_user(CELL_USERINFO_FOCUS_LISTHEAD, CELL_USERINFO_LISTTYPE_ALL, CELL_OK);
++    assert(calls == 2 && last_result == CELL_USERINFO_RET_OK && last_id == 2 && !strcmp(last_name, "Player 2"));
++    select_user(1, CELL_USERINFO_LISTTYPE_SIGNIN, CELL_OK);      /* focus on the logged-in one */
++    assert(calls == 3 && last_id == 2);
++    setenv("PS3_USERS", "A,B,C", 1);
++    s_user_n = -1;
++    select_user(3, CELL_USERINFO_LISTTYPE_ALL, CELL_OK);         /* a valid focus wins */
++    assert(calls == 4 && last_id == 3);
++
++    setenv("PS3_USER_SELECT", "0", 1);                           /* the player cancels */
++    select_user(CELL_USERINFO_FOCUS_LISTHEAD, CELL_USERINFO_LISTTYPE_ALL, CELL_OK);
++    assert(calls == 5 && last_result == CELL_USERINFO_RET_CANCEL && last_id == 0);
++    setenv("PS3_USER_SELECT", "1", 1);
++    select_user(CELL_USERINFO_FOCUS_LISTHEAD, CELL_USERINFO_LISTTYPE_ALL, CELL_OK);
++    assert(calls == 6 && last_result == CELL_USERINFO_RET_OK && last_id == 1);
++    unsetenv("PS3_USER_SELECT");
++
++    select_user(CELL_USERINFO_FOCUS_LISTHEAD, 7, (s32)CELL_USERINFO_ERROR_PARAM);   /* bad type */
++    assert(calls == 6);
++    assert(cellUserInfoSelectUser_ListType(NULL, 0x400, 0, NULL) == (s32)CELL_USERINFO_ERROR_PARAM);
++    puts("test_userinfo_select: ok");
 +    return 0;
 +}
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c

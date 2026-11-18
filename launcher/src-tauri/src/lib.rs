@@ -138,6 +138,10 @@ pub struct Settings {
     pub mouse_deadzone: u32,
     /// PS3_MOUSE_CAPTURE: a click captures the cursor (Esc/Cmd releases it).
     pub mouse_capture: bool,
+    /// PS3_PAD_FIRST_PORT=1: controllers start at the second port, so the
+    /// keyboard and mouse are player 1 and a controller is player 2
+    /// (split-screen co-op with one controller).
+    pub controller_player2: bool,
     /// PS3_RUMBLE=0 when off; PS3_RUMBLE_STRENGTH in percent (0-200).
     pub rumble: bool,
     pub rumble_strength: u32,
@@ -268,6 +272,7 @@ impl Default for Settings {
             mouse_invert_x: false,
             mouse_deadzone: 30,
             mouse_capture: true,
+            controller_player2: false,
             rumble: true,
             rumble_strength: 100,
             adaptive_triggers: true,
@@ -1253,6 +1258,9 @@ fn launch_env(s: &Settings, disc: &Path, play: &Path, input: &InputEnv) -> Vec<(
     if matches!(s.input_mode.as_str(), "controller" | "keyboard") {
         set("PS3_INPUT_MODE", s.input_mode.clone());
     }
+    if s.controller_player2 {
+        set("PS3_PAD_FIRST_PORT", "1".into());
+    }
     let all = input.has_mouse_section;
     if !s.mouse {
         set("PS3_MOUSE", "0".into());
@@ -1858,6 +1866,7 @@ const FEATURE_MARKERS: &[&str] = &[
     "PS3RECOMP_ENG_VCACHE_FRAMEREUSE", // same-frame vertex reuse, churn
     "PS3RECOMP_ENG_GUEST_WRITE",       // GPU depth downsample, CPU writes into GPU targets
     "PS3_TELEMETRY",                   // the [tele] line and the stall report
+    "PS3_PAD_FIRST_PORT",              // a controller as player 2 (split-screen co-op)
 ];
 
 /// The markers found in `data` (a NUL-terminated C string in the binary).
@@ -3901,7 +3910,7 @@ mod tests {
             "PS3_MOUSE_DEADZONE", "PS3_MOUSE_CAPTURE", "PS3_RUMBLE", "PS3_RUMBLE_STRENGTH", "PS3_WINDOW_MODE", "PS3_WINDOW_SIZE",
             "PS3_DISPLAY", "PS3_VSYNC", "PS3_UPSCALE", "PS3_VIBRANCE", "PS3_CONTRAST", "PS3_VIGNETTE", "PS3_GRAIN", "PS3_LUT",
             "PS3_LUT_STRENGTH", "PS3_MODS", "PS3_MODS_DIR", "PS3_MODS_DUMP", "PS3_RES_SCALE", "PS3_AUDIO_VOLUME", "PS3_AUDIO_MUTE",
-            "PS3_AUDIO_DEVICE",
+            "PS3_AUDIO_DEVICE", "PS3_PAD_FIRST_PORT",
         ];
         for k in new_vars {
             assert!(!base.iter().any(|b| b == k), "{k} passed by default");
@@ -3928,6 +3937,7 @@ mod tests {
         st.mouse_invert_y = true;
         st.mouse_deadzone = 10;
         st.mouse_capture = false;
+        st.controller_player2 = true;
         st.rumble_strength = 150;
         st.audio_volume = 40;
         st.audio_device = "AirPods".into();
@@ -3957,6 +3967,7 @@ mod tests {
         assert!(!e.contains_key("PS3_MOUSE_INVERT_X"));
         assert_eq!(e["PS3_MOUSE_DEADZONE"], "10");
         assert_eq!(e["PS3_MOUSE_CAPTURE"], "0");
+        assert_eq!(e["PS3_PAD_FIRST_PORT"], "1");
         assert!(!e.contains_key("PS3_RUMBLE"));
         assert_eq!(e["PS3_RUMBLE_STRENGTH"], "150");
         assert_eq!(e["PS3_AUDIO_VOLUME"], "40");

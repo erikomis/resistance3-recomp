@@ -29,6 +29,12 @@ toolkit, dos scripts, do runner e do launcher do port do Resistance 2. Veja
 > própria cópia legítima. Projeto de fã, sem vínculo com a Sony Interactive
 > Entertainment ou a Insomniac Games.
 
+## Metadados do projeto
+
+Os metadados do projeto para catálogos e ferramentas ficam em [`.recomp.json`](.recomp.json),
+conforme a [especificação do recomp.board](https://recomp.fyi/spec). Mantenha o arquivo
+atualizado quando mudar o estado do projeto, a versão do jogo suportada ou as plataformas de destino.
+
 ## Estado
 
 Em 2026-11-13: o disco 01.00 está traduzido e compilado. A instalação no HD,

@@ -29,6 +29,12 @@ port's toolkit patch, scripts, runner and launcher. See
 > their own legitimate copy. A fan project, not affiliated with Sony
 > Interactive Entertainment or Insomniac Games.
 
+## Project metadata
+
+Project metadata for directories and tools lives in [`.recomp.json`](.recomp.json),
+following the [recomp.board specification](https://recomp.fyi/spec). Keep it
+updated when the project status, supported game version or target platforms change.
+
 ## Status
 
 As of 2026-11-13: the 01.00 disc is lifted and built. HDD installation,
